@@ -1,0 +1,7 @@
+string mesh_path
+float32 min_radius
+float32 max_radius
+float32 min_length
+bool watertight_hint
+---
+hole_toolpath_planner/HoleArray holes

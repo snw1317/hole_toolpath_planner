@@ -1,0 +1,62 @@
+# Default parameters for hole_toolpath_planner
+# Values derived from AGENTS.md specification; units are meters unless noted.
+
+hole_toolpath_planner:
+  ros__parameters:
+    detection:
+      mode: "auto"                # auto | surface | solid
+      dedupe_angle_deg: 5.0
+      dedupe_center_tol: 0.0005
+      dedupe_radius_tol: 0.0005
+
+    sampling:
+      strategy: "uniform_area"
+      points: 150000
+      seed: 42
+
+    normals:
+      k: 30
+      viewpoint: [0.0, 0.0, 0.0]
+
+    surface_circle:
+      min_loop_vertices: 6
+      circularity_rmse_thresh: 0.002
+      plane_fit_method: "pca"
+      outer_boundary_policy: "largest_by_area"
+      into_hint: [0.0, 0.0, 1.0]
+      thickness: null            # leave null to signal "unknown" thickness
+      min_radius: 0.001
+      max_radius: 0.050
+
+    cylinder_fit:
+      distance_threshold: 0.0008
+      normal_distance_weight: 0.1
+      max_iterations: 10000
+      min_inliers: 800
+      radius_min: 0.001
+      radius_max: 0.050
+      extract_iteratively: true
+
+    pose:
+      z_direction_rule: "into_part"
+      x_seed: "world_x"
+      neighbor_radius_scale: 2.0
+      neighbor_slab_thickness: 0.002
+      gram_schmidt_fallback: "mesh_x"
+
+    toolpath:
+      generate: false
+      strategy: "circle"
+      approach_offset: 0.010
+      stepdown: 0.002
+      feedrate: 0.050
+      spiral_pitch: 0.005
+
+    rviz:
+      marker_ns: "holes"
+      sphere_scale: 0.003
+      axis_length: 0.020
+
+    logging:
+      frame_id: "world"
+      min_severity: "info"
