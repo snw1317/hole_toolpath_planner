@@ -7,6 +7,7 @@
 #include <limits>
 #include <queue>
 #include <random>
+#include <sstream>
 #include <unordered_map>
 #include <utility>
 
@@ -335,18 +336,92 @@ msg::HoleArray HoleDetector::detect(const srv::DetectHoles::Request & request)
 
   const bool do_surface = params_.detection.mode == "surface" || params_.detection.mode == "auto";
   const bool do_solid = params_.detection.mode == "solid" || params_.detection.mode == "auto";
+  const bool run_solid = do_solid || request.watertight_hint;
+
+  SurfaceDiagnostics surface_diag;
+  SolidDiagnostics solid_diag;
 
   if (do_surface) {
-    auto surface_holes = detect_surface_mode(mesh, request);
+    auto surface_holes = detect_surface_mode(mesh, request, &surface_diag);
     holes.insert(holes.end(), surface_holes.begin(), surface_holes.end());
   }
 
-  if (do_solid || request.watertight_hint) {
-    auto solid_holes = detect_solid_mode(mesh, request);
+  if (run_solid) {
+    auto solid_holes = detect_solid_mode(mesh, request, &solid_diag);
     holes.insert(holes.end(), solid_holes.begin(), solid_holes.end());
   }
 
+  const size_t before_dedup = holes.size();
   auto deduped = deduplicate(std::move(holes));
+
+  if (deduped.empty()) {
+    RCLCPP_WARN(logger_, "No holes detected in mesh '%s'", request.mesh_path.c_str());
+    if (do_surface && surface_diag.attempted) {
+      std::ostringstream ss;
+      ss << "Surface-mode diagnostics: faces=" << surface_diag.face_count
+         << ", boundary_edges=" << surface_diag.boundary_edge_count
+         << ", loops_valid=" << surface_diag.loops_total
+         << ", considered=" << surface_diag.loops_considered
+         << ", circle_fit_success=" << surface_diag.circle_fit_success
+         << ", emitted=" << surface_diag.detections_emitted
+         << "; rejects(circle_fit=" << surface_diag.circle_fit_failures
+         << ", rmse=" << surface_diag.rmse_rejections
+         << ", radius=" << surface_diag.radius_rejections
+         << ", topology=" << surface_diag.loops_invalid_topology
+         << ", too_small=" << surface_diag.loops_too_small
+         << ", invalid_vertices=" << surface_diag.loops_invalid_vertices
+         << ", outer_skipped=" << surface_diag.loops_outer_skipped << ")";
+      if (surface_diag.mesh_empty) {
+        ss << "; mesh contained no polygons";
+      }
+      if (surface_diag.vertices_empty) {
+        ss << "; mesh contained no vertices";
+      }
+      if (surface_diag.boundary_edges_empty) {
+        ss << "; no boundary edges were detected";
+      }
+      RCLCPP_WARN(logger_, "%s", ss.str().c_str());
+    }
+    if (run_solid && solid_diag.attempted) {
+      std::ostringstream ss;
+      ss << "Solid-mode diagnostics: vertices=" << solid_diag.vertex_count
+         << ", polygons=" << solid_diag.polygon_count
+         << ", valid_triangles=" << solid_diag.valid_triangles
+         << ", samples(requested=" << solid_diag.samples_requested
+         << ", generated=" << solid_diag.samples_generated << ")"
+         << ", segmentations=" << solid_diag.segmentation_attempts
+         << ", emitted=" << solid_diag.cylinders_emitted
+         << "; rejects(no_entry_plane=" << solid_diag.cylinders_no_entry_plane
+         << ", length=" << solid_diag.cylinders_rejected_length << ")";
+      if (solid_diag.missing_vertices) {
+        ss << "; mesh provided no vertices";
+      }
+      if (solid_diag.missing_polygons) {
+        ss << "; mesh provided no polygons";
+      }
+      if (solid_diag.no_valid_triangles) {
+        ss << "; no valid triangles for sampling";
+      }
+      if (solid_diag.area_too_small) {
+        ss << "; total triangle area below threshold";
+      }
+      if (solid_diag.insufficient_samples) {
+        ss << "; insufficient sample points for RANSAC";
+      }
+      if (solid_diag.invalid_radius_constraints) {
+        ss << "; radius constraints invalid";
+      }
+      RCLCPP_WARN(logger_, "%s", ss.str().c_str());
+    }
+  } else {
+    RCLCPP_INFO(
+      logger_,
+      "Detected %zu hole(s) (%zu before deduplication) in mesh '%s'",
+      deduped.size(),
+      before_dedup,
+      request.mesh_path.c_str());
+  }
+
   return assemble_response(std::move(deduped), stamp);
 }
 
@@ -381,11 +456,20 @@ bool HoleDetector::load_mesh(const std::string & mesh_path, pcl::PolygonMesh & m
 
 std::vector<msg::Hole> HoleDetector::detect_surface_mode(
   const pcl::PolygonMesh & mesh,
-  const srv::DetectHoles::Request & request) const
+  const srv::DetectHoles::Request & request,
+  SurfaceDiagnostics * diagnostics) const
 {
+  if (diagnostics) {
+    diagnostics->attempted = true;
+    diagnostics->face_count = mesh.polygons.size();
+  }
+
   std::vector<msg::Hole> detections;
 
   if (mesh.polygons.empty()) {
+    if (diagnostics) {
+      diagnostics->mesh_empty = true;
+    }
     RCLCPP_WARN_ONCE(logger_, "Surface-mode requested but mesh contains no polygons.");
     return detections;
   }
@@ -393,6 +477,9 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
   pcl::PointCloud<pcl::PointXYZ> cloud;
   pcl::fromPCLPointCloud2(mesh.cloud, cloud);
   if (cloud.empty()) {
+    if (diagnostics) {
+      diagnostics->vertices_empty = true;
+    }
     RCLCPP_WARN(logger_, "Surface-mode cannot run: mesh has no vertices.");
     return detections;
   }
@@ -557,9 +644,15 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
     const size_t index = boundary_edges.size();
     boundary_edges.push_back(BoundaryEdge{start, end, info.first_face, comp_id, false});
     edges_by_component[comp_id][start].push_back(index);
+    if (diagnostics) {
+      ++diagnostics->boundary_edge_count;
+    }
   }
 
   if (boundary_edges.empty()) {
+    if (diagnostics) {
+      diagnostics->boundary_edges_empty = true;
+    }
     return detections;
   }
 
@@ -640,10 +733,16 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
     }
 
     if (!valid_loop) {
+      if (diagnostics) {
+        ++diagnostics->loops_invalid_topology;
+      }
       continue;
     }
 
     if (loop_vertices.size() < static_cast<size_t>(params_.surface_circle.min_loop_vertices)) {
+      if (diagnostics) {
+        ++diagnostics->loops_too_small;
+      }
       continue;
     }
 
@@ -676,6 +775,9 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
     bool has_invalid = false;
     for (const uint32_t vid : loop.vertices) {
       if (vid >= vertex_count) {
+        if (diagnostics) {
+          ++diagnostics->loops_invalid_vertices;
+        }
         has_invalid = true;
         break;
       }
@@ -732,6 +834,10 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
     metrics.push_back(std::move(metric));
   }
 
+  if (diagnostics) {
+    diagnostics->loops_total = metrics.size();
+  }
+
   if (metrics.empty()) {
     return detections;
   }
@@ -757,19 +863,37 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
 
   for (size_t i = 0; i < metrics.size(); ++i) {
     if (outer_loop_index.count(metrics[i].component) && outer_loop_index[metrics[i].component] == i) {
+      if (diagnostics) {
+        ++diagnostics->loops_outer_skipped;
+      }
       continue;  // Skip outer boundary
     }
 
     const auto & metric = metrics[i];
+    if (diagnostics) {
+      ++diagnostics->loops_considered;
+    }
     if (!metric.circle.success) {
+      if (diagnostics) {
+        ++diagnostics->circle_fit_failures;
+      }
       continue;
     }
+    if (diagnostics) {
+      ++diagnostics->circle_fit_success;
+    }
     if (metric.circle.rmse > params_.surface_circle.circularity_rmse_thresh) {
+      if (diagnostics) {
+        ++diagnostics->rmse_rejections;
+      }
       continue;
     }
 
     const double radius = metric.circle.radius;
     if (radius < min_radius_threshold || radius > max_radius_threshold) {
+      if (diagnostics) {
+        ++diagnostics->radius_rejections;
+      }
       continue;
     }
 
@@ -810,6 +934,9 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
     hole.axis.z = frame.z.z();
 
     detections.push_back(std::move(hole));
+    if (diagnostics) {
+      ++diagnostics->detections_emitted;
+    }
   }
 
   return detections;
@@ -817,13 +944,23 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
 
 std::vector<msg::Hole> HoleDetector::detect_solid_mode(
   const pcl::PolygonMesh & mesh,
-  const srv::DetectHoles::Request & request) const
+  const srv::DetectHoles::Request & request,
+  SolidDiagnostics * diagnostics) const
 {
   std::vector<msg::Hole> detections;
 
   pcl::PointCloud<pcl::PointXYZ> vertex_cloud;
   pcl::fromPCLPointCloud2(mesh.cloud, vertex_cloud);
+  if (diagnostics) {
+    diagnostics->attempted = true;
+    diagnostics->vertex_count = vertex_cloud.size();
+    diagnostics->polygon_count = mesh.polygons.size();
+  }
   if (vertex_cloud.empty() || mesh.polygons.empty()) {
+    if (diagnostics) {
+      diagnostics->missing_vertices = vertex_cloud.empty();
+      diagnostics->missing_polygons = mesh.polygons.empty();
+    }
     RCLCPP_WARN_ONCE(logger_, "Solid-mode requested but mesh lacks vertices or polygons.");
     return detections;
   }
@@ -876,14 +1013,23 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
 
     TriangleSample tri{v0, v1, v2, 0.5 * area2};
     triangles.push_back(std::move(tri));
+    if (diagnostics) {
+      ++diagnostics->valid_triangles;
+    }
   }
 
   if (triangles.empty()) {
+    if (diagnostics) {
+      diagnostics->no_valid_triangles = true;
+    }
     RCLCPP_WARN(logger_, "Solid-mode sampling skipped: no valid triangles detected.");
     return detections;
   }
 
   const int sample_points = std::max(1, params_.sampling.points);
+  if (diagnostics) {
+    diagnostics->samples_requested = static_cast<size_t>(sample_points);
+  }
   std::vector<double> weights;
   weights.reserve(triangles.size());
   double total_area = 0.0;
@@ -893,6 +1039,9 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
   }
 
   if (total_area < 1e-9) {
+    if (diagnostics) {
+      diagnostics->area_too_small = true;
+    }
     RCLCPP_WARN(logger_, "Solid-mode sampling failed: mesh surface area too small.");
     return detections;
   }
@@ -917,7 +1066,14 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
     samples->push_back(pcl::PointXYZ(static_cast<float>(point.x()), static_cast<float>(point.y()), static_cast<float>(point.z())));
   }
 
+  if (diagnostics) {
+    diagnostics->samples_generated = samples->size();
+  }
+
   if (samples->size() < static_cast<size_t>(params_.cylinder_fit.min_inliers)) {
+    if (diagnostics) {
+      diagnostics->insufficient_samples = true;
+    }
     RCLCPP_WARN(logger_, "Solid-mode sampling produced insufficient points (%zu)", samples->size());
     return detections;
   }
@@ -943,6 +1099,9 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
     radius_max = std::min(radius_max, static_cast<double>(request.max_radius));
   }
   if (radius_min >= radius_max) {
+    if (diagnostics) {
+      diagnostics->invalid_radius_constraints = true;
+    }
     RCLCPP_WARN(logger_, "Solid-mode radius constraints invalid (min %.4f >= max %.4f)", radius_min, radius_max);
     return detections;
   }
@@ -954,6 +1113,9 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
     params_.cylinder_fit.distance_threshold * 2.0 : params_.pose.neighbor_slab_thickness;
 
   while (cloud->size() >= static_cast<size_t>(params_.cylinder_fit.min_inliers)) {
+    if (diagnostics) {
+      ++diagnostics->segmentation_attempts;
+    }
     pcl::ModelCoefficients coefficients;
     pcl::PointIndices inliers;
     pcl::SACSegmentationFromNormals<pcl::PointXYZ, pcl::Normal> seg;
@@ -1075,7 +1237,9 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
       chosen_normal = entry_index == 0 ? entry_plane_normal : exit_plane_normal;
     }
 
-    bool detection_valid = best_score >= 0.0;
+    const bool entry_plane_found = best_score >= 0.0;
+    bool detection_valid = entry_plane_found;
+    bool rejected_for_length = false;
 
     if (detection_valid) {
       if (chosen_normal.dot(z_dir) > 0.0) {
@@ -1100,6 +1264,7 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
       double length = new_t_max - new_t_min;
       if (length < min_length || !std::isfinite(length)) {
         detection_valid = false;
+        rejected_for_length = true;
       } else {
         const double plane_offset = (origin - chosen_center).dot(chosen_normal);
         if (std::abs(plane_offset) > 2.0 * params_.cylinder_fit.distance_threshold) {
@@ -1138,6 +1303,17 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
         hole.axis.z = frame.z.z();
 
         detections.push_back(std::move(hole));
+        if (diagnostics) {
+          ++diagnostics->cylinders_emitted;
+        }
+      }
+    }
+
+    if (!detection_valid && diagnostics) {
+      if (!entry_plane_found) {
+        ++diagnostics->cylinders_no_entry_plane;
+      } else if (rejected_for_length) {
+        ++diagnostics->cylinders_rejected_length;
       }
     }
 
