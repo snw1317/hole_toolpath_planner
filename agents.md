@@ -79,8 +79,8 @@ geometry_msgs/PoseStamped[] poses
 `srv/DetectHoles.srv`
 ```ros
 string mesh_path
-float32 min_radius
-float32 max_radius
+float32 min_diameter
+float32 max_diameter
 float32 min_length
 bool watertight_hint
 ---
@@ -240,9 +240,12 @@ source install/setup.bash
 # Launch
 ros2 launch hole_toolpath_planner hole_detector.launch.py
 
+# Python implementation (Open3D)
+ros2 launch hole_toolpath_planner_py detector_py.launch.py
+
 # Service call
 ros2 service call /detect_holes hole_toolpath_planner/srv/DetectHoles \
-"{mesh_path: '/home/user/parts/bracket.stl', min_radius: 0.003, max_radius: 0.015, min_length: 0.002, watertight_hint: true}"
+"{mesh_path: '/home/user/parts/bracket.stl', min_diameter: 0.006, max_diameter: 0.030, min_length: 0.002, watertight_hint: true}"
 ```
 
 ---
@@ -293,4 +296,3 @@ ros2 service call /detect_holes hole_toolpath_planner/srv/DetectHoles \
 
 ## 14) Mini prompt (for codegen agents)
 > Implement `surface_loops.{hpp,cpp}` to: (a) construct half‑edge adjacency; (b) extract ordered boundary loops; (c) per component, filter outer loop by largest projected area; (d) fit plane by PCA; (e) fit circle in plane (Pratt/Taubin); (f) reject loops exceeding `circularity_rmse_thresh`; (g) compute pose where origin is circle center and +Z points into the part using face‑normal consensus or `into_hint`; (h) emit `Hole` with `kind=SURFACE_CIRCLE`. Include robust fallbacks and unit tests.
-

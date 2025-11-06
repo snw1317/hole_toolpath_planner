@@ -1,6 +1,6 @@
 string mesh_path
-float32 min_radius
-float32 max_radius
+float32 min_diameter
+float32 max_diameter
 float32 min_length
 bool watertight_hint
 ---

@@ -47,8 +47,11 @@ struct CylinderFitParameters
   double normal_distance_weight;
   int max_iterations;
   int min_inliers;
+  double min_inlier_ratio;
   double radius_min;
   double radius_max;
+  double axis_alignment_min;
+  double length_max;
   bool extract_iteratively;
 };
 

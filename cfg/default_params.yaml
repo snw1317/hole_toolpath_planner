@@ -32,9 +32,12 @@ hole_toolpath_planner:
       distance_threshold: 0.0008
       normal_distance_weight: 0.1
       max_iterations: 10000
-      min_inliers: 800
+      min_inliers: 50
+      min_inlier_ratio: 0.0005
       radius_min: 0.001
       radius_max: 0.050
+      axis_alignment_min: 0.6
+      length_max: 0.050
       extract_iteratively: true
 
     pose:

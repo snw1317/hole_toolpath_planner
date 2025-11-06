@@ -63,12 +63,24 @@ private:
     size_t segmentation_attempts{0};
     size_t cylinders_emitted{0};
     size_t cylinders_rejected_length{0};
+    size_t cylinders_rejected_alignment{0};
+    size_t cylinders_invalid_origin{0};
     size_t cylinders_no_entry_plane{0};
+    size_t cylinders_rejected_inliers{0};
+    size_t min_inliers_required{0};
+    double min_inlier_ratio{0.0};
+    size_t last_inlier_count{0};
+    double last_inlier_ratio{0.0};
   };
 
   bool load_mesh(const std::string & mesh_path, pcl::PolygonMesh & mesh) const;
 
-  std::vector<msg::Hole> detect_surface_mode(
+  std::vector<msg::Hole> detect_surface_mode_legacy(
+    const pcl::PolygonMesh & mesh,
+    const srv::DetectHoles::Request & request,
+    SurfaceDiagnostics * diagnostics = nullptr) const;
+
+  std::vector<msg::Hole> detect_surface_clusters(
     const pcl::PolygonMesh & mesh,
     const srv::DetectHoles::Request & request,
     SurfaceDiagnostics * diagnostics = nullptr) const;

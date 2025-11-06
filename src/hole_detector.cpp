@@ -4,15 +4,18 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <iomanip>
 #include <limits>
 #include <queue>
 #include <random>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <Eigen/Core>
 #include <Eigen/Eigenvalues>
+#include <Eigen/SVD>
 #include <Eigen/Geometry>
 #include <pcl/ModelCoefficients.h>
 #include <pcl/common/common.h>
@@ -22,9 +25,11 @@
 #include <pcl/io/vtk_lib_io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <pcl/search/kdtree.h>
 #include <pcl/sample_consensus/method_types.h>
 #include <pcl/sample_consensus/model_types.h>
 #include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/segmentation/extract_clusters.h>
 
 #include "hole_toolpath_planner/toolpath_generator.hpp"
 
@@ -80,6 +85,129 @@ Eigen::Vector3d normalize_or_default(const Eigen::Vector3d & v, const Eigen::Vec
     return v / norm;
   }
   return fallback;
+}
+
+double median(std::vector<double> values)
+{
+  if (values.empty()) {
+    return 0.0;
+  }
+  std::sort(values.begin(), values.end());
+  const size_t mid = values.size() / 2;
+  if (values.size() % 2 == 1) {
+    return values[mid];
+  }
+  if (mid == 0) {
+    return values[0];
+  }
+  return 0.5 * (values[mid - 1] + values[mid]);
+}
+
+struct CylinderFitSimple
+{
+  bool valid{false};
+  double radius{0.0};
+  double length{0.0};
+  Eigen::Vector3d top{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d bottom{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d axis{Eigen::Vector3d::UnitZ()};
+};
+
+CylinderFitSimple fit_cylinder_from_points(const std::vector<Eigen::Vector3d> & points)
+{
+  CylinderFitSimple result;
+  if (points.size() < 6) {
+    return result;
+  }
+
+  Eigen::Vector3d mean = Eigen::Vector3d::Zero();
+  for (const auto & p : points) {
+    mean += p;
+  }
+  mean /= static_cast<double>(points.size());
+
+  Eigen::MatrixXd centered(points.size(), 3);
+  for (size_t i = 0; i < points.size(); ++i) {
+    centered.row(i) = (points[i] - mean).transpose();
+  }
+
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd(centered, Eigen::ComputeThinV);
+  if (svd.matrixV().cols() < 3) {
+    return result;
+  }
+
+  const Eigen::Matrix3d V = svd.matrixV();
+  int best_index = 0;
+  double best_abs_z = -1.0;
+  for (int i = 0; i < 3; ++i) {
+    const double abs_z = std::abs(V(2, i));
+    if (abs_z > best_abs_z) {
+      best_abs_z = abs_z;
+      best_index = i;
+    }
+  }
+
+  Eigen::Vector3d axis_dir = normalize_or_default(V.col(best_index), Eigen::Vector3d::UnitZ());
+
+  std::vector<double> radial_distances;
+  radial_distances.reserve(points.size());
+  double t_min = std::numeric_limits<double>::infinity();
+  double t_max = -std::numeric_limits<double>::infinity();
+
+  for (const auto & p : points) {
+    const Eigen::Vector3d diff = p - mean;
+    const double t = diff.dot(axis_dir);
+    t_min = std::min(t_min, t);
+    t_max = std::max(t_max, t);
+    const Eigen::Vector3d axis_point = mean + t * axis_dir;
+    const double radial = (p - axis_point).norm();
+    if (std::isfinite(radial)) {
+      radial_distances.push_back(radial);
+    }
+  }
+
+  if (!std::isfinite(t_min) || !std::isfinite(t_max) || radial_distances.size() < 3) {
+    return result;
+  }
+
+  const double radius = median(radial_distances);
+  if (!std::isfinite(radius) || radius <= 0.0) {
+    return result;
+  }
+
+  Eigen::Vector3d min_point = mean + t_min * axis_dir;
+  Eigen::Vector3d max_point = mean + t_max * axis_dir;
+
+  Eigen::Vector3d top = max_point;
+  Eigen::Vector3d bottom = min_point;
+  if (top.z() < bottom.z()) {
+    std::swap(top, bottom);
+  }
+
+  Eigen::Vector3d axis_vec = bottom - top;
+  const double axis_norm = axis_vec.norm();
+  if (axis_norm < 1e-9) {
+    return result;
+  }
+  axis_vec /= axis_norm;
+
+  if (axis_vec.z() > 0.0) {
+    axis_vec = -axis_vec;
+    std::swap(top, bottom);
+  }
+
+  const double length = (bottom - top).norm();
+  if (!std::isfinite(length) || length < 1e-6) {
+    return result;
+  }
+
+  result.valid = true;
+  result.radius = radius;
+  result.length = length;
+  result.top = top;
+  result.bottom = bottom;
+  result.axis = axis_vec;
+  return result;
 }
 
 struct Frame
@@ -342,8 +470,12 @@ msg::HoleArray HoleDetector::detect(const srv::DetectHoles::Request & request)
   SolidDiagnostics solid_diag;
 
   if (do_surface) {
-    auto surface_holes = detect_surface_mode(mesh, request, &surface_diag);
+    auto surface_holes = detect_surface_clusters(mesh, request, &surface_diag);
     holes.insert(holes.end(), surface_holes.begin(), surface_holes.end());
+    if (surface_holes.empty()) {
+      auto legacy_surface = detect_surface_mode_legacy(mesh, request, &surface_diag);
+      holes.insert(holes.end(), legacy_surface.begin(), legacy_surface.end());
+    }
   }
 
   if (run_solid) {
@@ -384,6 +516,7 @@ msg::HoleArray HoleDetector::detect(const srv::DetectHoles::Request & request)
     }
     if (run_solid && solid_diag.attempted) {
       std::ostringstream ss;
+      ss << std::fixed << std::setprecision(4);
       ss << "Solid-mode diagnostics: vertices=" << solid_diag.vertex_count
          << ", polygons=" << solid_diag.polygon_count
          << ", valid_triangles=" << solid_diag.valid_triangles
@@ -392,7 +525,14 @@ msg::HoleArray HoleDetector::detect(const srv::DetectHoles::Request & request)
          << ", segmentations=" << solid_diag.segmentation_attempts
          << ", emitted=" << solid_diag.cylinders_emitted
          << "; rejects(no_entry_plane=" << solid_diag.cylinders_no_entry_plane
-         << ", length=" << solid_diag.cylinders_rejected_length << ")";
+         << ", length=" << solid_diag.cylinders_rejected_length
+         << ", inliers=" << solid_diag.cylinders_rejected_inliers << ")"
+         << "; thresholds(min_inliers=" << solid_diag.min_inliers_required
+         << ", min_ratio=" << solid_diag.min_inlier_ratio << ")";
+      if (solid_diag.last_inlier_count > 0 || solid_diag.last_inlier_ratio > 0.0) {
+        ss << "; last_candidate(inliers=" << solid_diag.last_inlier_count
+           << ", ratio=" << solid_diag.last_inlier_ratio << ")";
+      }
       if (solid_diag.missing_vertices) {
         ss << "; mesh provided no vertices";
       }
@@ -454,7 +594,266 @@ bool HoleDetector::load_mesh(const std::string & mesh_path, pcl::PolygonMesh & m
   return true;
 }
 
-std::vector<msg::Hole> HoleDetector::detect_surface_mode(
+std::vector<msg::Hole> HoleDetector::detect_surface_clusters(
+  const pcl::PolygonMesh & mesh,
+  const srv::DetectHoles::Request & request,
+  SurfaceDiagnostics * diagnostics) const
+{
+  if (diagnostics) {
+    diagnostics->attempted = true;
+    diagnostics->face_count = mesh.polygons.size();
+    diagnostics->boundary_edge_count = 0;
+    diagnostics->loops_total = 0;
+    diagnostics->loops_considered = 0;
+    diagnostics->circle_fit_success = 0;
+    diagnostics->detections_emitted = 0;
+    diagnostics->mesh_empty = mesh.polygons.empty();
+    diagnostics->vertices_empty = false;
+    diagnostics->boundary_edges_empty = false;
+    diagnostics->loops_invalid_topology = 0;
+    diagnostics->loops_too_small = 0;
+    diagnostics->loops_invalid_vertices = 0;
+    diagnostics->loops_outer_skipped = 0;
+    diagnostics->circle_fit_failures = 0;
+    diagnostics->rmse_rejections = 0;
+    diagnostics->radius_rejections = 0;
+  }
+
+  std::vector<msg::Hole> detections;
+
+  if (mesh.polygons.empty()) {
+    if (diagnostics) {
+      diagnostics->mesh_empty = true;
+    }
+    RCLCPP_WARN(logger_, "Surface cluster mode cannot run: mesh contains no polygons.");
+    return detections;
+  }
+
+  pcl::PointCloud<pcl::PointXYZ> vertex_cloud;
+  pcl::fromPCLPointCloud2(mesh.cloud, vertex_cloud);
+  if (vertex_cloud.empty()) {
+    if (diagnostics) {
+      diagnostics->vertices_empty = true;
+    }
+    RCLCPP_WARN(logger_, "Surface cluster mode cannot run: mesh has no vertices.");
+    return detections;
+  }
+
+  std::vector<Eigen::Vector3d> vertices(vertex_cloud.size());
+  for (size_t i = 0; i < vertex_cloud.size(); ++i) {
+    vertices[i] = Eigen::Vector3d{vertex_cloud[i].x, vertex_cloud[i].y, vertex_cloud[i].z};
+  }
+
+  Eigen::Vector3d bbox_min = Eigen::Vector3d::Constant(std::numeric_limits<double>::infinity());
+  Eigen::Vector3d bbox_max = Eigen::Vector3d::Constant(-std::numeric_limits<double>::infinity());
+  for (const auto & v : vertices) {
+    bbox_min = bbox_min.cwiseMin(v);
+    bbox_max = bbox_max.cwiseMax(v);
+  }
+
+  constexpr double normal_z_threshold = 0.2;
+  constexpr double edge_margin = 0.001;
+  constexpr double cluster_tolerance = 0.01;
+  const int min_cluster_size = std::max(10, params_.surface_circle.min_loop_vertices);
+  constexpr double diameter_tolerance = 0.00075;
+  constexpr double length_tolerance = 1e-5;
+
+  std::vector<Eigen::Vector3d> centroids;
+  centroids.reserve(mesh.polygons.size());
+  std::vector<size_t> centroid_triangle_indices;
+  centroid_triangle_indices.reserve(mesh.polygons.size());
+
+  bool warned_non_tri = false;
+  for (size_t face_idx = 0; face_idx < mesh.polygons.size(); ++face_idx) {
+    const auto & poly = mesh.polygons[face_idx];
+    if (poly.vertices.size() != 3) {
+      if (!warned_non_tri) {
+        RCLCPP_WARN(
+          logger_,
+          "Surface cluster mode currently supports triangle meshes only; ignoring non-triangles.");
+        warned_non_tri = true;
+      }
+      continue;
+    }
+
+    std::array<uint32_t, 3> vids{};
+    bool indices_valid = true;
+    for (size_t i = 0; i < 3; ++i) {
+      vids[i] = poly.vertices[i];
+      if (vids[i] >= vertices.size()) {
+        indices_valid = false;
+        break;
+      }
+    }
+    if (!indices_valid) {
+      continue;
+    }
+
+    const Eigen::Vector3d & v0 = vertices[vids[0]];
+    const Eigen::Vector3d & v1 = vertices[vids[1]];
+    const Eigen::Vector3d & v2 = vertices[vids[2]];
+
+    const Eigen::Vector3d e0 = v1 - v0;
+    const Eigen::Vector3d e1 = v2 - v0;
+    Eigen::Vector3d normal = e0.cross(e1);
+    const double normal_norm = normal.norm();
+    if (normal_norm < 1e-12) {
+      continue;
+    }
+    normal /= normal_norm;
+
+    const Eigen::Vector3d centroid = (v0 + v1 + v2) / 3.0;
+
+    if (std::abs(normal.z()) >= normal_z_threshold) {
+      continue;
+    }
+
+    const bool inside_x =
+      centroid.x() > bbox_min.x() + edge_margin && centroid.x() < bbox_max.x() - edge_margin;
+    const bool inside_y =
+      centroid.y() > bbox_min.y() + edge_margin && centroid.y() < bbox_max.y() - edge_margin;
+
+    if (!inside_x || !inside_y) {
+      continue;
+    }
+
+    centroids.push_back(centroid);
+    centroid_triangle_indices.push_back(face_idx);
+  }
+
+  if (diagnostics) {
+    diagnostics->boundary_edge_count = centroids.size();
+  }
+
+  if (centroids.empty()) {
+    if (diagnostics) {
+      diagnostics->boundary_edges_empty = true;
+    }
+    RCLCPP_DEBUG(logger_, "Surface cluster mode: no candidate cylindrical wall faces found.");
+    return detections;
+  }
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr centroid_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+  centroid_cloud->points.reserve(centroids.size());
+  for (const auto & c : centroids) {
+    centroid_cloud->points.emplace_back(
+      static_cast<float>(c.x()),
+      static_cast<float>(c.y()),
+      static_cast<float>(c.z()));
+  }
+  centroid_cloud->width = centroid_cloud->points.size();
+  centroid_cloud->height = 1;
+
+  if (centroid_cloud->points.size() < static_cast<size_t>(min_cluster_size)) {
+    return detections;
+  }
+
+  pcl::search::KdTree<pcl::PointXYZ>::Ptr search_tree(new pcl::search::KdTree<pcl::PointXYZ>());
+  search_tree->setInputCloud(centroid_cloud);
+
+  pcl::EuclideanClusterExtraction<pcl::PointXYZ> extractor;
+  extractor.setInputCloud(centroid_cloud);
+  extractor.setSearchMethod(search_tree);
+  extractor.setClusterTolerance(cluster_tolerance);
+  extractor.setMinClusterSize(min_cluster_size);
+  extractor.setMaxClusterSize(static_cast<int>(centroid_cloud->points.size()));
+
+  std::vector<pcl::PointIndices> clusters;
+  extractor.extract(clusters);
+
+  if (diagnostics) {
+    diagnostics->loops_total = clusters.size();
+    diagnostics->loops_considered = clusters.size();
+  }
+
+  const double min_diameter = request.min_diameter > 0.0 ? request.min_diameter : 0.0;
+  const double max_diameter = request.max_diameter > 0.0 ?
+    request.max_diameter : std::numeric_limits<double>::max();
+  const double min_length = request.min_length > 0.0 ? request.min_length : 0.0;
+
+  for (size_t cluster_idx = 0; cluster_idx < clusters.size(); ++cluster_idx) {
+    const auto & indices = clusters[cluster_idx].indices;
+    if (indices.size() < static_cast<size_t>(min_cluster_size)) {
+      continue;
+    }
+
+    std::unordered_set<uint32_t> vertex_ids;
+    vertex_ids.reserve(indices.size() * 3);
+
+    for (const int centroid_idx : indices) {
+      if (centroid_idx < 0 || static_cast<size_t>(centroid_idx) >= centroid_triangle_indices.size()) {
+        continue;
+      }
+      const size_t tri_idx = centroid_triangle_indices[static_cast<size_t>(centroid_idx)];
+      const auto & poly = mesh.polygons[tri_idx];
+      for (const uint32_t vid : poly.vertices) {
+        if (vid < vertices.size()) {
+          vertex_ids.insert(vid);
+        }
+      }
+    }
+
+    std::vector<Eigen::Vector3d> cluster_vertices;
+    cluster_vertices.reserve(vertex_ids.size());
+    for (const uint32_t vid : vertex_ids) {
+      cluster_vertices.push_back(vertices[vid]);
+    }
+
+    if (cluster_vertices.size() < 6) {
+      continue;
+    }
+
+    const CylinderFitSimple fit = fit_cylinder_from_points(cluster_vertices);
+    if (!fit.valid) {
+      continue;
+    }
+
+    const double diameter = 2.0 * fit.radius;
+    if (diameter + diameter_tolerance < min_diameter) {
+      continue;
+    }
+    if (diameter - diameter_tolerance > max_diameter) {
+      continue;
+    }
+    if (min_length > 0.0 && fit.length + length_tolerance < min_length) {
+      continue;
+    }
+
+    const Frame frame = make_frame(fit.axis, Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY());
+
+    msg::Hole hole;
+    hole.kind = msg::Hole::SURFACE_CIRCLE;
+    hole.diameter = static_cast<float>(diameter);
+    hole.length = static_cast<float>(fit.length);
+    hole.pose.position.x = fit.top.x();
+    hole.pose.position.y = fit.top.y();
+    hole.pose.position.z = fit.top.z();
+    hole.pose.orientation = quaternion_from_frame(frame);
+    hole.axis.x = frame.z.x();
+    hole.axis.y = frame.z.y();
+    hole.axis.z = frame.z.z();
+
+    detections.push_back(std::move(hole));
+
+    if (diagnostics) {
+      ++diagnostics->detections_emitted;
+      ++diagnostics->circle_fit_success;
+    }
+
+    RCLCPP_DEBUG(
+      logger_,
+      "Surface cluster %zu: triangles=%zu, vertices=%zu, diameter=%.3f mm, length=%.3f mm",
+      cluster_idx,
+      indices.size(),
+      cluster_vertices.size(),
+      diameter * 1000.0,
+      fit.length * 1000.0);
+  }
+
+  return detections;
+}
+
+std::vector<msg::Hole> HoleDetector::detect_surface_mode_legacy(
   const pcl::PolygonMesh & mesh,
   const srv::DetectHoles::Request & request,
   SurfaceDiagnostics * diagnostics) const
@@ -852,9 +1251,17 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
     }
   }
 
-  const double request_min_radius = static_cast<double>(request.min_radius);
-  const double request_max_radius = static_cast<double>(request.max_radius);
-  const double min_radius_threshold = std::max(params_.surface_circle.min_radius, std::max(0.0, request_min_radius));
+  const double request_min_radius = 0.5 * std::max(0.0, static_cast<double>(request.min_diameter));
+  double request_max_radius = 0.5 * std::max(0.0, static_cast<double>(request.max_diameter));
+  if (request_max_radius > 0.0 && request_max_radius < request_min_radius) {
+    RCLCPP_WARN(
+      logger_,
+      "Request max_diameter (%.4f m) is less than min_diameter (%.4f m); clamping to the minimum.",
+      static_cast<double>(request.max_diameter),
+      static_cast<double>(request.min_diameter));
+    request_max_radius = request_min_radius;
+  }
+  const double min_radius_threshold = std::max(params_.surface_circle.min_radius, request_min_radius);
   const double max_radius_request = request_max_radius > 0.0 ? request_max_radius : std::numeric_limits<double>::infinity();
   const double max_radius_threshold = std::min(params_.surface_circle.max_radius, max_radius_request);
   const Eigen::Vector3d hint = normalize_or_default(
@@ -896,6 +1303,7 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
       }
       continue;
     }
+    const double diameter = 2.0 * radius;
 
     Eigen::Vector3d z_dir = normalize_or_default(metric.normal, Eigen::Vector3d::UnitZ());
     const int comp_id = metric.component;
@@ -922,7 +1330,7 @@ std::vector<msg::Hole> HoleDetector::detect_surface_mode(
 
     msg::Hole hole;
     hole.kind = msg::Hole::SURFACE_CIRCLE;
-    hole.radius = static_cast<float>(radius);
+    hole.diameter = static_cast<float>(diameter);
     hole.length = params_.surface_circle.has_thickness ?
       static_cast<float>(params_.surface_circle.thickness) : 0.0f;
     hole.pose.position.x = center3d.x();
@@ -1070,7 +1478,22 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
     diagnostics->samples_generated = samples->size();
   }
 
-  if (samples->size() < static_cast<size_t>(params_.cylinder_fit.min_inliers)) {
+  const Eigen::Vector3d axis_hint = normalize_or_default(
+    Eigen::Vector3d{
+      params_.surface_circle.into_hint[0],
+      params_.surface_circle.into_hint[1],
+      params_.surface_circle.into_hint[2]},
+    Eigen::Vector3d::UnitZ());
+  const double axis_alignment_min = std::clamp(params_.cylinder_fit.axis_alignment_min, 0.0, 1.0);
+
+  const size_t min_inliers_required = static_cast<size_t>(std::max(params_.cylinder_fit.min_inliers, 1));
+  const double min_inlier_ratio = std::clamp(params_.cylinder_fit.min_inlier_ratio, 0.0, 1.0);
+  if (diagnostics) {
+    diagnostics->min_inliers_required = min_inliers_required;
+    diagnostics->min_inlier_ratio = min_inlier_ratio;
+  }
+
+  if (samples->size() < min_inliers_required) {
     if (diagnostics) {
       diagnostics->insufficient_samples = true;
     }
@@ -1091,12 +1514,23 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>(*samples));
   pcl::PointCloud<pcl::Normal>::Ptr cloud_normals(new pcl::PointCloud<pcl::Normal>(*normals));
 
+  const double request_min_radius = 0.5 * std::max(0.0, static_cast<double>(request.min_diameter));
+  double request_max_radius = 0.5 * std::max(0.0, static_cast<double>(request.max_diameter));
+  if (request_max_radius > 0.0 && request_max_radius < request_min_radius) {
+    RCLCPP_WARN(
+      logger_,
+      "Request max_diameter (%.4f m) is less than min_diameter (%.4f m); clamping to the minimum.",
+      static_cast<double>(request.max_diameter),
+      static_cast<double>(request.min_diameter));
+    request_max_radius = request_min_radius;
+  }
+
   const double radius_min = std::max(
     params_.cylinder_fit.radius_min,
-    std::max(0.0, static_cast<double>(request.min_radius)));
+    request_min_radius);
   double radius_max = params_.cylinder_fit.radius_max;
-  if (request.max_radius > 0.0) {
-    radius_max = std::min(radius_max, static_cast<double>(request.max_radius));
+  if (request_max_radius > 0.0) {
+    radius_max = std::min(radius_max, request_max_radius);
   }
   if (radius_min >= radius_max) {
     if (diagnostics) {
@@ -1112,7 +1546,7 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
   const double neighbor_slab = params_.pose.neighbor_slab_thickness <= 0.0 ?
     params_.cylinder_fit.distance_threshold * 2.0 : params_.pose.neighbor_slab_thickness;
 
-  while (cloud->size() >= static_cast<size_t>(params_.cylinder_fit.min_inliers)) {
+  while (cloud->size() >= min_inliers_required) {
     if (diagnostics) {
       ++diagnostics->segmentation_attempts;
     }
@@ -1130,10 +1564,36 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
     seg.setInputNormals(cloud_normals);
     seg.segment(inliers, coefficients);
 
-    if (
-      coefficients.values.size() < 7 ||
-      static_cast<size_t>(inliers.indices.size()) < static_cast<size_t>(params_.cylinder_fit.min_inliers))
-    {
+    if (coefficients.values.size() < 7) {
+      if (diagnostics) {
+        diagnostics->last_inlier_count = inliers.indices.size();
+        diagnostics->last_inlier_ratio = cloud->empty() ? 0.0 :
+          static_cast<double>(inliers.indices.size()) / static_cast<double>(cloud->size());
+      }
+      break;
+    }
+
+    const size_t inlier_count = static_cast<size_t>(inliers.indices.size());
+    const double inlier_ratio = cloud->empty() ? 0.0 :
+      static_cast<double>(inlier_count) / static_cast<double>(cloud->size());
+    if (diagnostics) {
+      diagnostics->last_inlier_count = inlier_count;
+      diagnostics->last_inlier_ratio = inlier_ratio;
+    }
+
+    const bool below_count_threshold = inlier_count < min_inliers_required;
+    const bool below_ratio_threshold = inlier_ratio < min_inlier_ratio;
+    if (below_count_threshold && below_ratio_threshold) {
+      if (diagnostics) {
+        ++diagnostics->cylinders_rejected_inliers;
+      }
+      RCLCPP_DEBUG(
+        logger_,
+        "Solid-mode cylinder candidate rejected: inliers=%zu (min=%zu), ratio=%.4f (min=%.4f)",
+        inlier_count,
+        min_inliers_required,
+        inlier_ratio,
+        min_inlier_ratio);
       break;
     }
 
@@ -1158,7 +1618,7 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
       inlier_points.emplace_back(pt.x, pt.y, pt.z);
     }
 
-    if (inlier_points.size() < static_cast<size_t>(params_.cylinder_fit.min_inliers)) {
+    if (inlier_points.size() < min_inliers_required) {
       break;
     }
 
@@ -1240,14 +1700,26 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
     const bool entry_plane_found = best_score >= 0.0;
     bool detection_valid = entry_plane_found;
     bool rejected_for_length = false;
+    bool rejected_for_alignment = false;
+    bool rejected_for_origin = false;
+    double axis_alignment = 0.0;
+    double length = 0.0;
+    Eigen::Vector3d origin = chosen_center;
+
+    if (detection_valid && chosen_normal.dot(z_dir) > 0.0) {
+      chosen_normal = -chosen_normal;
+    }
 
     if (detection_valid) {
-      if (chosen_normal.dot(z_dir) > 0.0) {
-        chosen_normal = -chosen_normal;
+      axis_alignment = std::abs(z_dir.dot(axis_hint));
+      if (axis_alignment < axis_alignment_min) {
+        detection_valid = false;
+        rejected_for_alignment = true;
       }
+    }
 
+    if (detection_valid) {
       const double denom = z_dir.dot(chosen_normal);
-      Eigen::Vector3d origin = chosen_center;
       if (std::abs(denom) > 1e-9) {
         const double t_intersect = (chosen_center - axis_point).dot(chosen_normal) / denom;
         origin = axis_point + t_intersect * z_dir;
@@ -1261,59 +1733,105 @@ std::vector<msg::Hole> HoleDetector::detect_solid_mode(
         new_t_max = std::max(new_t_max, t);
       }
 
-      double length = new_t_max - new_t_min;
-      if (length < min_length || !std::isfinite(length)) {
+      length = new_t_max - new_t_min;
+      const double max_length = params_.cylinder_fit.length_max;
+      if (length < min_length || !std::isfinite(length) ||
+        (max_length > 0.0 && length > max_length))
+      {
         detection_valid = false;
         rejected_for_length = true;
-      } else {
-        const double plane_offset = (origin - chosen_center).dot(chosen_normal);
-        if (std::abs(plane_offset) > 2.0 * params_.cylinder_fit.distance_threshold) {
-          origin -= plane_offset * chosen_normal;
-        }
-
-        Eigen::Vector3d tangent_seed = Eigen::Vector3d::Zero();
-        for (const auto & p : entry_ring) {
-          const Eigen::Vector3d radial = p - origin - z_dir * ((p - origin).dot(z_dir));
-          tangent_seed += radial;
-        }
-        if (tangent_seed.norm() < 1e-6) {
-          tangent_seed = Eigen::Vector3d::UnitX();
-        } else {
-          tangent_seed.normalize();
-        }
-        Eigen::Vector3d minor_seed = z_dir.cross(tangent_seed);
-        if (minor_seed.norm() < 1e-6) {
-          minor_seed = z_dir.cross(Eigen::Vector3d::UnitY());
-        }
-
-        const Eigen::Vector3d primary_seed = select_seed(params_.pose.x_seed, tangent_seed, minor_seed);
-        const Eigen::Vector3d fallback_seed = select_seed(params_.pose.gram_schmidt_fallback, tangent_seed, minor_seed);
-        const Frame frame = make_frame(z_dir, primary_seed, fallback_seed);
-
-        msg::Hole hole;
-        hole.kind = msg::Hole::CYLINDER;
-        hole.radius = static_cast<float>(radius);
-        hole.length = static_cast<float>(length);
-        hole.pose.position.x = origin.x();
-        hole.pose.position.y = origin.y();
-        hole.pose.position.z = origin.z();
-        hole.pose.orientation = quaternion_from_frame(frame);
-        hole.axis.x = frame.z.x();
-        hole.axis.y = frame.z.y();
-        hole.axis.z = frame.z.z();
-
-        detections.push_back(std::move(hole));
-        if (diagnostics) {
-          ++diagnostics->cylinders_emitted;
-        }
       }
+    }
+
+    if (detection_valid) {
+      const double plane_offset = (origin - chosen_center).dot(chosen_normal);
+      if (std::abs(plane_offset) > 2.0 * params_.cylinder_fit.distance_threshold) {
+        origin -= plane_offset * chosen_normal;
+      }
+      if (
+        !std::isfinite(origin.x()) ||
+        !std::isfinite(origin.y()) ||
+        !std::isfinite(origin.z()))
+      {
+        detection_valid = false;
+        rejected_for_origin = true;
+      }
+    }
+
+    if (detection_valid) {
+      Eigen::Vector3d tangent_seed = Eigen::Vector3d::Zero();
+      for (const auto & p : entry_ring) {
+        const Eigen::Vector3d radial = p - origin - z_dir * ((p - origin).dot(z_dir));
+        tangent_seed += radial;
+      }
+      if (tangent_seed.norm() < 1e-6) {
+        tangent_seed = Eigen::Vector3d::UnitX();
+      } else {
+        tangent_seed.normalize();
+      }
+      Eigen::Vector3d minor_seed = z_dir.cross(tangent_seed);
+      if (minor_seed.norm() < 1e-6) {
+        minor_seed = z_dir.cross(Eigen::Vector3d::UnitY());
+      }
+
+      const Eigen::Vector3d primary_seed = select_seed(params_.pose.x_seed, tangent_seed, minor_seed);
+      const Eigen::Vector3d fallback_seed = select_seed(params_.pose.gram_schmidt_fallback, tangent_seed, minor_seed);
+      const Frame frame = make_frame(z_dir, primary_seed, fallback_seed);
+
+      msg::Hole hole;
+      hole.kind = msg::Hole::CYLINDER;
+      const double diameter = 2.0 * radius;
+      hole.diameter = static_cast<float>(diameter);
+      hole.length = static_cast<float>(length);
+      hole.pose.position.x = origin.x();
+      hole.pose.position.y = origin.y();
+      hole.pose.position.z = origin.z();
+      hole.pose.orientation = quaternion_from_frame(frame);
+      hole.axis.x = frame.z.x();
+      hole.axis.y = frame.z.y();
+      hole.axis.z = frame.z.z();
+
+      detections.push_back(std::move(hole));
+      if (diagnostics) {
+        ++diagnostics->cylinders_emitted;
+      }
+      RCLCPP_INFO(
+        logger_,
+        "Solid-mode cylinder accepted: diameter=%.4f m, length=%.4f m, center=(%.4f, %.4f, %.4f), "
+        "inliers=%zu (ratio=%.4f), alignment=%.3f",
+        diameter,
+        length,
+        origin.x(),
+        origin.y(),
+        origin.z(),
+        inlier_count,
+        inlier_ratio,
+        axis_alignment);
+    }
+
+    if (!detection_valid) {
+      RCLCPP_DEBUG(
+        logger_,
+        "Solid-mode cylinder rejected after validation: entry_plane_found=%d, rejected_for_length=%d, "
+        "rejected_for_alignment=%d, rejected_for_origin=%d, alignment=%.3f, inliers=%zu (ratio=%.4f)",
+        entry_plane_found ? 1 : 0,
+        rejected_for_length ? 1 : 0,
+        rejected_for_alignment ? 1 : 0,
+        rejected_for_origin ? 1 : 0,
+        axis_alignment,
+        inlier_count,
+        inlier_ratio);
     }
 
     if (!detection_valid && diagnostics) {
       if (!entry_plane_found) {
         ++diagnostics->cylinders_no_entry_plane;
+      } else if (rejected_for_alignment) {
+        ++diagnostics->cylinders_rejected_alignment;
       } else if (rejected_for_length) {
         ++diagnostics->cylinders_rejected_length;
+      } else if (rejected_for_origin) {
+        ++diagnostics->cylinders_invalid_origin;
       }
     }
 
@@ -1368,11 +1886,12 @@ std::vector<msg::Hole> HoleDetector::deduplicate(std::vector<msg::Hole> && holes
         continue;
       }
 
-      const double radius_a = holes[i].radius;
-      const double radius_b = holes[j].radius;
-      const double radius_diff = std::fabs(radius_a - radius_b);
-      const double radius_tol = std::max(min_radius_tol, 0.02 * std::min(radius_a, radius_b));
-      if (radius_diff > radius_tol) {
+      const double diameter_a = holes[i].diameter;
+      const double diameter_b = holes[j].diameter;
+      const double diameter_diff = std::fabs(diameter_a - diameter_b);
+      const double min_diameter_tol = 2.0 * min_radius_tol;
+      const double diameter_tol = std::max(min_diameter_tol, 0.02 * std::min(diameter_a, diameter_b));
+      if (diameter_diff > diameter_tol) {
         continue;
       }
 

@@ -141,7 +141,7 @@ private:
       std::ostringstream oss;
       oss.setf(std::ios::fixed, std::ios::floatfield);
       oss.precision(3);
-      oss << "id=" << hole.id << " ⌀=" << hole.radius * 1000.0 << " mm";
+      oss << "id=" << hole.id << " ⌀=" << hole.diameter * 1000.0 << " mm";
       text.text = oss.str();
       array.markers.push_back(text);
     }

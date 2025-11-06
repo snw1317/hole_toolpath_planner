@@ -80,11 +80,17 @@ PlannerParameters declare_and_get_parameters(rclcpp::Node & node)
   params.cylinder_fit.max_iterations = node.declare_parameter<int>(
     "cylinder_fit.max_iterations", 10000);
   params.cylinder_fit.min_inliers = node.declare_parameter<int>(
-    "cylinder_fit.min_inliers", 800);
+    "cylinder_fit.min_inliers", 50);
+  params.cylinder_fit.min_inlier_ratio = node.declare_parameter<double>(
+    "cylinder_fit.min_inlier_ratio", 0.0005);
   params.cylinder_fit.radius_min = node.declare_parameter<double>(
     "cylinder_fit.radius_min", 0.001);
   params.cylinder_fit.radius_max = node.declare_parameter<double>(
     "cylinder_fit.radius_max", 0.050);
+  params.cylinder_fit.axis_alignment_min = node.declare_parameter<double>(
+    "cylinder_fit.axis_alignment_min", 0.6);
+  params.cylinder_fit.length_max = node.declare_parameter<double>(
+    "cylinder_fit.length_max", 0.050);
   params.cylinder_fit.extract_iteratively = node.declare_parameter<bool>(
     "cylinder_fit.extract_iteratively", true);
 

@@ -7,7 +7,7 @@ uint8 CYLINDER=1
 
 std_msgs/Header header
 geometry_msgs/Pose pose
-float32 radius
+float32 diameter
 float32 length
 geometry_msgs/Vector3 axis
 int32 id
