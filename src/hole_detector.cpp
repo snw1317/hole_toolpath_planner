@@ -525,10 +525,14 @@ msg::HoleArray HoleDetector::detect(const srv::DetectHoles::Request & request)
          << ", segmentations=" << solid_diag.segmentation_attempts
          << ", emitted=" << solid_diag.cylinders_emitted
          << "; rejects(no_entry_plane=" << solid_diag.cylinders_no_entry_plane
+         << ", alignment=" << solid_diag.cylinders_rejected_alignment
          << ", length=" << solid_diag.cylinders_rejected_length
+         << ", origin=" << solid_diag.cylinders_invalid_origin
          << ", inliers=" << solid_diag.cylinders_rejected_inliers << ")"
          << "; thresholds(min_inliers=" << solid_diag.min_inliers_required
-         << ", min_ratio=" << solid_diag.min_inlier_ratio << ")";
+         << ", min_ratio=" << solid_diag.min_inlier_ratio
+         << ", axis_align_min=" << params_.cylinder_fit.axis_alignment_min
+         << ", length_max=" << params_.cylinder_fit.length_max << ")";
       if (solid_diag.last_inlier_count > 0 || solid_diag.last_inlier_ratio > 0.0) {
         ss << "; last_candidate(inliers=" << solid_diag.last_inlier_count
            << ", ratio=" << solid_diag.last_inlier_ratio << ")";
@@ -554,12 +558,26 @@ msg::HoleArray HoleDetector::detect(const srv::DetectHoles::Request & request)
       RCLCPP_WARN(logger_, "%s", ss.str().c_str());
     }
   } else {
-    RCLCPP_INFO(
-      logger_,
-      "Detected %zu hole(s) (%zu before deduplication) in mesh '%s'",
-      deduped.size(),
-      before_dedup,
-      request.mesh_path.c_str());
+    std::ostringstream header;
+    header << "Detected " << deduped.size() << " hole(s)";
+    if (before_dedup != deduped.size()) {
+      header << " (" << before_dedup << " before deduplication)";
+    }
+    header << " in mesh '" << request.mesh_path << "'";
+    RCLCPP_INFO(logger_, "%s", header.str().c_str());
+
+    for (size_t idx = 0; idx < deduped.size(); ++idx) {
+      const auto & hole = deduped[idx];
+      RCLCPP_INFO(
+        logger_,
+        "  [%02zu] center=(%.4f, %.4f, %.4f) m, diameter=%.3f mm, length=%.3f mm",
+        idx,
+        hole.pose.position.x,
+        hole.pose.position.y,
+        hole.pose.position.z,
+        hole.diameter * 1000.0,
+        hole.length * 1000.0);
+    }
   }
 
   return assemble_response(std::move(deduped), stamp);
