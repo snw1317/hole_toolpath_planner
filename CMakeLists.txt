@@ -6,6 +6,9 @@ if(NOT CMAKE_CXX_STANDARD)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTORCC ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -18,6 +21,7 @@ find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io filters segmentation surface)
+find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(Eigen3 REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -109,10 +113,44 @@ ament_target_dependencies(hole_detector_node
     rclcpp_components
 )
 
+add_library(${PROJECT_NAME}_gui
+  src/gui/hole_planner_window.cpp
+  include/hole_toolpath_planner/gui/hole_planner_window.hpp
+)
+
+target_include_directories(${PROJECT_NAME}_gui
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${PCL_INCLUDE_DIRS}
+)
+
+target_link_libraries(${PROJECT_NAME}_gui
+  PUBLIC
+    ${PROJECT_NAME}_core
+    ${PCL_LIBRARIES}
+    Qt5::Widgets
+)
+
+target_compile_definitions(${PROJECT_NAME}_gui
+  PUBLIC ${PCL_DEFINITIONS}
+)
+
+ament_target_dependencies(${PROJECT_NAME}_gui
+  PUBLIC
+    rclcpp
+    rclcpp_components
+)
+
+add_executable(${PROJECT_NAME}_gui_app src/gui/hole_gui_app.cpp)
+target_link_libraries(${PROJECT_NAME}_gui_app PRIVATE ${PROJECT_NAME}_gui Qt5::Widgets)
+
 install(TARGETS
   ${PROJECT_NAME}_core
   ${PROJECT_NAME}_component
   hole_detector_node
+  ${PROJECT_NAME}_gui
+  ${PROJECT_NAME}_gui_app
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}
