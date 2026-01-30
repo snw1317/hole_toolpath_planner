@@ -11,6 +11,7 @@
 
 class QAction;
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
 class QDockWidget;
 class QLabel;
@@ -88,10 +89,13 @@ private:
   QCheckBox* show_axes_{};
   QCheckBox* show_table_{};
   QCheckBox* imperial_units_{};
+  QComboBox* detection_algo_{};
 
   QDoubleSpinBox* min_diameter_{};
   QDoubleSpinBox* max_diameter_{};
   QDoubleSpinBox* min_length_{};
+  QDoubleSpinBox* cluster_tolerance_{};
+  QDoubleSpinBox* radial_dot_threshold_{};
   QCheckBox* watertight_hint_{};
 
   QDoubleSpinBox* axis_size_{};
@@ -102,6 +106,7 @@ private:
   QLabel* min_diameter_label_{};
   QLabel* max_diameter_label_{};
   QLabel* min_length_label_{};
+  QLabel* cluster_tolerance_label_{};
   QLabel* axis_size_label_{};
   QLabel* origin_size_label_{};
 

@@ -5,6 +5,9 @@ hole_toolpath_planner:
   ros__parameters:
     detection:
       mode: "auto"                # auto | surface | solid
+      surface_strategy: "auto"    # auto | clusters | legacy | radial
+      cluster_tolerance: 0.010
+      radial_dot_threshold: 0.6
       dedupe_angle_deg: 5.0
       dedupe_center_tol: 0.0005
       dedupe_radius_tol: 0.0005

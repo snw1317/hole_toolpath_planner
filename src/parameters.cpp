@@ -24,6 +24,9 @@ PlannerParameters declare_and_get_parameters(rclcpp::Node & node)
   PlannerParameters params{};
 
   params.detection.mode = node.declare_parameter<std::string>("detection.mode", "auto");
+  params.detection.surface_strategy = node.declare_parameter<std::string>("detection.surface_strategy", "auto");
+  params.detection.cluster_tolerance = node.declare_parameter<double>("detection.cluster_tolerance", 0.01);
+  params.detection.radial_dot_threshold = node.declare_parameter<double>("detection.radial_dot_threshold", 0.6);
   params.detection.dedupe_angle_deg = node.declare_parameter<double>("detection.dedupe_angle_deg", 5.0);
   params.detection.dedupe_center_tol = node.declare_parameter<double>("detection.dedupe_center_tol", 0.0005);
   params.detection.dedupe_radius_tol = node.declare_parameter<double>("detection.dedupe_radius_tol", 0.0005);

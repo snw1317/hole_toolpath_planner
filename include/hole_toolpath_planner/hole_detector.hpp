@@ -85,6 +85,11 @@ private:
     const srv::DetectHoles::Request & request,
     SurfaceDiagnostics * diagnostics = nullptr) const;
 
+  std::vector<msg::Hole> detect_surface_clusters_radial(
+    const pcl::PolygonMesh & mesh,
+    const srv::DetectHoles::Request & request,
+    SurfaceDiagnostics * diagnostics = nullptr) const;
+
   std::vector<msg::Hole> detect_solid_mode(
     const pcl::PolygonMesh & mesh,
     const srv::DetectHoles::Request & request,

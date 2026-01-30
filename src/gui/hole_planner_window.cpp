@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -124,6 +125,18 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   min_length_->setRange(0.0, 1.0);
   min_length_->setSingleStep(0.001);
   min_length_->setValue(0.0);
+  cluster_tolerance_ = new QDoubleSpinBox(dock_widget);
+  cluster_tolerance_->setDecimals(4);
+  cluster_tolerance_->setRange(0.0001, 0.1);
+  cluster_tolerance_->setSingleStep(0.001);
+  cluster_tolerance_->setValue(0.01);
+  cluster_tolerance_->setToolTip("Euclidean clustering tolerance for surface-based detection.");
+  radial_dot_threshold_ = new QDoubleSpinBox(dock_widget);
+  radial_dot_threshold_->setDecimals(2);
+  radial_dot_threshold_->setRange(0.0, 1.0);
+  radial_dot_threshold_->setSingleStep(0.05);
+  radial_dot_threshold_->setValue(0.6);
+  radial_dot_threshold_->setToolTip("Radial surface filter threshold (lower = more surfaces included).");
   watertight_hint_ = new QCheckBox(dock_widget);
   watertight_hint_->setChecked(false);
 
@@ -133,7 +146,38 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   request_form->addRow(min_diameter_label_, min_diameter_);
   request_form->addRow(max_diameter_label_, max_diameter_);
   request_form->addRow(min_length_label_, min_length_);
+  cluster_tolerance_label_ = new QLabel("Cluster tol (m)", dock_widget);
+  request_form->addRow(cluster_tolerance_label_, cluster_tolerance_);
+  request_form->addRow(new QLabel("Radial dot thresh", dock_widget), radial_dot_threshold_);
   request_form->addRow(new QLabel("Watertight hint", dock_widget), watertight_hint_);
+  detection_algo_ = new QComboBox(dock_widget);
+  detection_algo_->addItem("Auto (default)");
+  detection_algo_->addItem("Surface clusters (fast)");
+  detection_algo_->addItem("Legacy surface (fast)");
+  detection_algo_->addItem("Surface clusters (radial)");
+  detection_algo_->addItem("Solid cylinders only");
+  detection_algo_->setToolTip("Select the hole detection algorithm.");
+  detection_algo_->setItemData(
+    0,
+    "Auto: surface clusters first, then legacy fallback; solid cylinders when watertight is enabled.",
+    Qt::ToolTipRole);
+  detection_algo_->setItemData(
+    1,
+    "Surface clusters: fast for flat plates with clear hole walls; may miss curved surfaces.",
+    Qt::ToolTipRole);
+  detection_algo_->setItemData(
+    2,
+    "Legacy surface: older boundary-loop method; sometimes finds holes missed by clusters.",
+    Qt::ToolTipRole);
+  detection_algo_->setItemData(
+    3,
+    "Radial surface clusters: uses mesh-center radial filtering to find hole walls on curved parts.",
+    Qt::ToolTipRole);
+  detection_algo_->setItemData(
+    4,
+    "Solid cylinders only: RANSAC cylinder fit on full mesh; best for watertight solids but slower.",
+    Qt::ToolTipRole);
+  request_form->addRow(new QLabel("Detection algorithm", dock_widget), detection_algo_);
 
   auto* view_form = new QFormLayout();
   show_mesh_ = new QCheckBox("Show mesh", dock_widget);
@@ -143,7 +187,7 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   show_axes_ = new QCheckBox("Show world axes", dock_widget);
   show_axes_->setChecked(true);
   show_table_ = new QCheckBox("Show table", dock_widget);
-  show_table_->setChecked(false);
+  show_table_->setChecked(true);
   imperial_units_ = new QCheckBox("Imperial units (in)", dock_widget);
   imperial_units_->setChecked(false);
 
@@ -188,8 +232,8 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   hole_table_->horizontalHeader()->setStretchLastSection(true);
   hole_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
   hole_table_->setEditTriggers(QAbstractItemView::AllEditTriggers);
-  hole_table_->setVisible(false);
-  show_all_holes_->setVisible(false);
+  hole_table_->setVisible(true);
+  show_all_holes_->setVisible(true);
 
   layout->addSpacing(8);
   layout->addWidget(show_all_holes_);
@@ -276,12 +320,14 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
     min_diameter_->setValue(min_diameter_->value() * scale);
     max_diameter_->setValue(max_diameter_->value() * scale);
     min_length_->setValue(min_length_->value() * scale);
+    cluster_tolerance_->setValue(cluster_tolerance_->value() * scale);
     axis_size_->setValue(axis_size_->value() * scale);
     origin_size_->setValue(origin_size_->value() * scale);
 
     min_diameter_label_->setText(checked ? "Min diameter (in)" : "Min diameter (m)");
     max_diameter_label_->setText(checked ? "Max diameter (in)" : "Max diameter (m)");
     min_length_label_->setText(checked ? "Min length (in)" : "Min length (m)");
+    cluster_tolerance_label_->setText(checked ? "Cluster tol (in)" : "Cluster tol (m)");
     axis_size_label_->setText(checked ? "Pose axis size (in)" : "Pose axis size (m)");
     origin_size_label_->setText(checked ? "World axis size (in)" : "World axis size (m)");
     hole_table_->setHorizontalHeaderLabels(QStringList() << "Show"
@@ -300,6 +346,9 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   mesh_actor_->SetVisibility(show_mesh_->isChecked());
   hole_actor_->SetVisibility(show_holes_->isChecked());
   axes_actor_->SetVisibility(show_axes_->isChecked());
+
+  show_all_holes_->setVisible(show_table_->isChecked());
+  hole_table_->setVisible(show_table_->isChecked());
 
   rebuildDetector();
 }
@@ -328,7 +377,28 @@ void HolePlannerWindow::rebuildDetector()
 
 void HolePlannerWindow::refreshParametersUi()
 {
-  (void)params_;
+  if (params_.detection.mode == "solid")
+  {
+    detection_algo_->setCurrentIndex(4);
+  }
+  else if (params_.detection.mode == "surface")
+  {
+    if (params_.detection.surface_strategy == "legacy")
+      detection_algo_->setCurrentIndex(2);
+    else if (params_.detection.surface_strategy == "clusters")
+      detection_algo_->setCurrentIndex(1);
+    else if (params_.detection.surface_strategy == "radial")
+      detection_algo_->setCurrentIndex(3);
+    else
+      detection_algo_->setCurrentIndex(0);
+  }
+  else
+  {
+    detection_algo_->setCurrentIndex(0);
+  }
+
+  cluster_tolerance_->setValue(params_.detection.cluster_tolerance);
+  radial_dot_threshold_->setValue(params_.detection.radial_dot_threshold);
 }
 
 void HolePlannerWindow::setMeshFile(const QString& file)
@@ -376,6 +446,34 @@ void HolePlannerWindow::plan()
   detect_request_.max_diameter = static_cast<float>(max_diameter_->value() * unit_scale);
   detect_request_.min_length = static_cast<float>(min_length_->value() * unit_scale);
   detect_request_.watertight_hint = watertight_hint_->isChecked();
+
+  params_.detection.cluster_tolerance = cluster_tolerance_->value() * unit_scale;
+  params_.detection.radial_dot_threshold = radial_dot_threshold_->value();
+
+  switch (detection_algo_->currentIndex())
+  {
+    case 1:
+      params_.detection.mode = "surface";
+      params_.detection.surface_strategy = "clusters";
+      break;
+    case 2:
+      params_.detection.mode = "surface";
+      params_.detection.surface_strategy = "legacy";
+      break;
+    case 3:
+      params_.detection.mode = "surface";
+      params_.detection.surface_strategy = "radial";
+      break;
+    case 4:
+      params_.detection.mode = "solid";
+      params_.detection.surface_strategy = "auto";
+      break;
+    case 0:
+    default:
+      params_.detection.mode = "auto";
+      params_.detection.surface_strategy = "auto";
+      break;
+  }
 
   detector_ = std::make_unique<HoleDetector>(*node_, params_);
 

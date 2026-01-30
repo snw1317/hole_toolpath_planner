@@ -10,6 +10,9 @@ namespace hole_toolpath_planner
 struct DetectionParameters
 {
   std::string mode;
+  std::string surface_strategy;
+  double cluster_tolerance;
+  double radial_dot_threshold;
   double dedupe_angle_deg;
   double dedupe_center_tol;
   double dedupe_radius_tol;

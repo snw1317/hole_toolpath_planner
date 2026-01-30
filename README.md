@@ -47,6 +47,12 @@ ros2 launch hole_toolpath_planner hole_detector.launch.py
 
 This starts the `detect_holes` service server (default name: `/detect_holes`). Keep this terminal open while sending requests from another terminal.
 
+To load a custom parameter file:
+
+```bash
+ros2 run hole_toolpath_planner hole_detector_node --ros-args --params-file cfg/default_params.yaml
+```
+
 ### Python (Open3D) detector
 Launch the Open3D-backed Python node:
 
@@ -76,13 +82,52 @@ The diameter fields are expressed in meters (e.g. `0.010` = 10 mm).
 
 If the service returns an empty array, check the node's terminal for diagnostics describing why candidate holes were rejected.
 
+### Service inputs vs GUI inputs
+The service request provides the same core inputs as the GUI:
+
+- `mesh_path`
+- `min_diameter`
+- `max_diameter`
+- `min_length`
+- `watertight_hint`
+
+Algorithm selection and tuning come from ROS parameters (same ones used by the GUI), which you can set
+via a params YAML file or `ros2 param set` before calling the service.
+
 ## Run the GUI
 Launch the hole toolpath planner GUI with a mesh and parameter file:
 
 ```bash
 cd ~/holes_pose_tpp_ws
 source install/setup.bash
-ros2 run hole_toolpath_planner hole_toolpath_planner_gui_app --   --mesh /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/test_parts/hole_test_plate_m.stl   --params /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/cfg/default_params.yaml
+ros2 run hole_toolpath_planner hole_toolpath_planner_gui_app -- \
+  --mesh /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/test_parts/hole_test_plate_m.stl \
+  --params /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/cfg/default_params.yaml
+```
+
+### Detection algorithm options
+The GUI exposes a detector dropdown. These map to ROS parameters:
+
+- **Auto (default)** → `detection.mode=auto`, `detection.surface_strategy=auto`
+- **Surface clusters (fast)** → `detection.mode=surface`, `detection.surface_strategy=clusters`
+- **Legacy surface (fast)** → `detection.mode=surface`, `detection.surface_strategy=legacy`
+- **Surface clusters (radial)** → `detection.mode=surface`, `detection.surface_strategy=radial`
+- **Solid cylinders only** → `detection.mode=solid`
+
+Radial clustering is designed for curved parts (e.g., `Sphere_with_holes.stl`) by filtering faces using
+the mesh center to find hole walls.
+
+### Detection tuning parameters (GUI + service)
+These parameters can be set in a YAML file or with `ros2 param set`. The GUI and the service share them:
+
+- `detection.cluster_tolerance` (meters): Euclidean clustering radius for surface detection.
+- `detection.radial_dot_threshold` (0–1): Radial filter threshold (lower = more faces included).
+
+Example overrides:
+
+```bash
+ros2 param set /hole_toolpath_planner detection.cluster_tolerance 0.008
+ros2 param set /hole_toolpath_planner detection.radial_dot_threshold 0.5
 ```
 
 ## Next steps

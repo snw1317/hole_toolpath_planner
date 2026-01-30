@@ -283,6 +283,135 @@ struct CircleFitResult
   double rmse{std::numeric_limits<double>::infinity()};
 };
 
+CircleFitResult fit_circle_pratt(const std::vector<Eigen::Vector2d> & points);
+
+struct CircleModel2d
+{
+  bool valid{false};
+  Eigen::Vector2d center{Eigen::Vector2d::Zero()};
+  double radius{0.0};
+};
+
+CircleModel2d circle_from_3_points(const Eigen::Vector2d & a,
+                                   const Eigen::Vector2d & b,
+                                   const Eigen::Vector2d & c)
+{
+  CircleModel2d model;
+  const double ax = a.x();
+  const double ay = a.y();
+  const double bx = b.x();
+  const double by = b.y();
+  const double cx = c.x();
+  const double cy = c.y();
+
+  const double a1 = bx - ax;
+  const double b1 = by - ay;
+  const double c1 = cx - ax;
+  const double d1 = cy - ay;
+
+  const double e = a1 * (ax + bx) + b1 * (ay + by);
+  const double f = c1 * (ax + cx) + d1 * (ay + cy);
+  const double g = 2.0 * (a1 * (cy - by) - b1 * (cx - bx));
+
+  if (std::abs(g) < 1e-12) {
+    return model;
+  }
+
+  const double cx_center = (d1 * e - b1 * f) / g;
+  const double cy_center = (a1 * f - c1 * e) / g;
+  const Eigen::Vector2d center(cx_center, cy_center);
+  const double radius = (center - a).norm();
+
+  if (!std::isfinite(radius) || radius <= 0.0) {
+    return model;
+  }
+
+  model.valid = true;
+  model.center = center;
+  model.radius = radius;
+  return model;
+}
+
+double circle_rmse(const std::vector<Eigen::Vector2d> & points,
+                   const Eigen::Vector2d & center,
+                   const double radius)
+{
+  if (points.empty()) {
+    return std::numeric_limits<double>::infinity();
+  }
+  double rmse_acc = 0.0;
+  for (const auto & p : points) {
+    const double dist = (p - center).norm();
+    const double residual = dist - radius;
+    rmse_acc += residual * residual;
+  }
+  return std::sqrt(rmse_acc / static_cast<double>(points.size()));
+}
+
+CircleFitResult fit_circle_ransac(const std::vector<Eigen::Vector2d> & points,
+                                  const size_t iterations,
+                                  const double inlier_tol,
+                                  const size_t min_inliers,
+                                  const uint32_t seed)
+{
+  CircleFitResult result;
+  if (points.size() < 3) {
+    return result;
+  }
+
+  std::mt19937 rng(seed);
+  std::uniform_int_distribution<size_t> dist(0, points.size() - 1);
+
+  std::vector<size_t> best_inliers;
+  CircleModel2d best_model;
+
+  for (size_t iter = 0; iter < iterations; ++iter) {
+    size_t i1 = dist(rng);
+    size_t i2 = dist(rng);
+    size_t i3 = dist(rng);
+    if (i1 == i2 || i1 == i3 || i2 == i3) {
+      continue;
+    }
+    const CircleModel2d model = circle_from_3_points(points[i1], points[i2], points[i3]);
+    if (!model.valid) {
+      continue;
+    }
+    std::vector<size_t> inliers;
+    inliers.reserve(points.size());
+    for (size_t i = 0; i < points.size(); ++i) {
+      const double dist_to_center = (points[i] - model.center).norm();
+      if (std::abs(dist_to_center - model.radius) <= inlier_tol) {
+        inliers.push_back(i);
+      }
+    }
+    if (inliers.size() > best_inliers.size()) {
+      best_inliers = std::move(inliers);
+      best_model = model;
+    }
+  }
+
+  if (best_inliers.size() < min_inliers) {
+    return result;
+  }
+
+  std::vector<Eigen::Vector2d> inlier_points;
+  inlier_points.reserve(best_inliers.size());
+  for (const size_t idx : best_inliers) {
+    inlier_points.push_back(points[idx]);
+  }
+
+  const CircleFitResult refined = fit_circle_pratt(inlier_points);
+  if (refined.success) {
+    return refined;
+  }
+
+  result.success = true;
+  result.center = best_model.center;
+  result.radius = best_model.radius;
+  result.rmse = circle_rmse(inlier_points, best_model.center, best_model.radius);
+  return result;
+}
+
 CircleFitResult fit_circle_pratt(const std::vector<Eigen::Vector2d> & points)
 {
   CircleFitResult result;
@@ -470,11 +599,23 @@ msg::HoleArray HoleDetector::detect(const srv::DetectHoles::Request & request)
   SolidDiagnostics solid_diag;
 
   if (do_surface) {
-    auto surface_holes = detect_surface_clusters(mesh, request, &surface_diag);
-    holes.insert(holes.end(), surface_holes.begin(), surface_holes.end());
-    if (surface_holes.empty()) {
+    const std::string strategy = params_.detection.surface_strategy;
+    if (strategy == "legacy") {
       auto legacy_surface = detect_surface_mode_legacy(mesh, request, &surface_diag);
       holes.insert(holes.end(), legacy_surface.begin(), legacy_surface.end());
+    } else if (strategy == "radial") {
+      auto radial_surface = detect_surface_clusters_radial(mesh, request, &surface_diag);
+      holes.insert(holes.end(), radial_surface.begin(), radial_surface.end());
+    } else if (strategy == "clusters") {
+      auto surface_holes = detect_surface_clusters(mesh, request, &surface_diag);
+      holes.insert(holes.end(), surface_holes.begin(), surface_holes.end());
+    } else {
+      auto surface_holes = detect_surface_clusters(mesh, request, &surface_diag);
+      holes.insert(holes.end(), surface_holes.begin(), surface_holes.end());
+      if (surface_holes.empty()) {
+        auto legacy_surface = detect_surface_mode_legacy(mesh, request, &surface_diag);
+        holes.insert(holes.end(), legacy_surface.begin(), legacy_surface.end());
+      }
     }
   }
 
@@ -671,7 +812,7 @@ std::vector<msg::Hole> HoleDetector::detect_surface_clusters(
 
   constexpr double normal_z_threshold = 0.2;
   constexpr double edge_margin = 0.001;
-  constexpr double cluster_tolerance = 0.01;
+  const double cluster_tolerance = std::max(1e-6, params_.detection.cluster_tolerance);
   const int min_cluster_size = std::max(10, params_.surface_circle.min_loop_vertices);
   constexpr double diameter_tolerance = 0.00075;
   constexpr double length_tolerance = 1e-5;
@@ -866,6 +1007,301 @@ std::vector<msg::Hole> HoleDetector::detect_surface_clusters(
       cluster_vertices.size(),
       diameter * 1000.0,
       fit.length * 1000.0);
+  }
+
+  return detections;
+}
+
+std::vector<msg::Hole> HoleDetector::detect_surface_clusters_radial(
+  const pcl::PolygonMesh & mesh,
+  const srv::DetectHoles::Request & request,
+  SurfaceDiagnostics * diagnostics) const
+{
+  if (diagnostics) {
+    diagnostics->attempted = true;
+    diagnostics->face_count = mesh.polygons.size();
+    diagnostics->boundary_edge_count = 0;
+    diagnostics->loops_total = 0;
+    diagnostics->loops_considered = 0;
+    diagnostics->circle_fit_success = 0;
+    diagnostics->detections_emitted = 0;
+    diagnostics->mesh_empty = mesh.polygons.empty();
+    diagnostics->vertices_empty = false;
+    diagnostics->boundary_edges_empty = false;
+    diagnostics->loops_invalid_topology = 0;
+    diagnostics->loops_too_small = 0;
+    diagnostics->loops_invalid_vertices = 0;
+    diagnostics->loops_outer_skipped = 0;
+    diagnostics->circle_fit_failures = 0;
+    diagnostics->rmse_rejections = 0;
+    diagnostics->radius_rejections = 0;
+  }
+
+  std::vector<msg::Hole> detections;
+
+  if (mesh.polygons.empty()) {
+    if (diagnostics) {
+      diagnostics->mesh_empty = true;
+    }
+    RCLCPP_WARN(logger_, "Surface radial cluster mode cannot run: mesh contains no polygons.");
+    return detections;
+  }
+
+  pcl::PointCloud<pcl::PointXYZ> vertex_cloud;
+  pcl::fromPCLPointCloud2(mesh.cloud, vertex_cloud);
+  if (vertex_cloud.empty()) {
+    if (diagnostics) {
+      diagnostics->vertices_empty = true;
+    }
+    RCLCPP_WARN(logger_, "Surface radial cluster mode cannot run: mesh has no vertices.");
+    return detections;
+  }
+
+  std::vector<Eigen::Vector3d> vertices(vertex_cloud.size());
+  Eigen::Vector3d mesh_center = Eigen::Vector3d::Zero();
+  for (size_t i = 0; i < vertex_cloud.size(); ++i) {
+    vertices[i] = Eigen::Vector3d{vertex_cloud[i].x, vertex_cloud[i].y, vertex_cloud[i].z};
+    mesh_center += vertices[i];
+  }
+  mesh_center /= static_cast<double>(vertex_cloud.size());
+
+  const double radial_dot_threshold =
+    std::clamp(params_.detection.radial_dot_threshold, 0.0, 1.0);
+  const double cluster_tolerance = std::max(1e-6, params_.detection.cluster_tolerance);
+  const int min_cluster_size = std::max(10, params_.surface_circle.min_loop_vertices);
+  constexpr double diameter_tolerance = 0.00075;
+  constexpr double length_tolerance = 1e-5;
+
+  std::vector<Eigen::Vector3d> centroids;
+  centroids.reserve(mesh.polygons.size());
+  std::vector<size_t> centroid_triangle_indices;
+  centroid_triangle_indices.reserve(mesh.polygons.size());
+
+  bool warned_non_tri = false;
+  for (size_t face_idx = 0; face_idx < mesh.polygons.size(); ++face_idx) {
+    const auto & poly = mesh.polygons[face_idx];
+    if (poly.vertices.size() != 3) {
+      if (!warned_non_tri) {
+        RCLCPP_WARN(
+          logger_,
+          "Surface radial cluster mode currently supports triangle meshes only; ignoring non-triangles.");
+        warned_non_tri = true;
+      }
+      continue;
+    }
+
+    std::array<uint32_t, 3> vids{};
+    bool indices_valid = true;
+    for (size_t i = 0; i < 3; ++i) {
+      vids[i] = poly.vertices[i];
+      if (vids[i] >= vertices.size()) {
+        indices_valid = false;
+        break;
+      }
+    }
+    if (!indices_valid) {
+      continue;
+    }
+
+    const Eigen::Vector3d & v0 = vertices[vids[0]];
+    const Eigen::Vector3d & v1 = vertices[vids[1]];
+    const Eigen::Vector3d & v2 = vertices[vids[2]];
+
+    const Eigen::Vector3d e0 = v1 - v0;
+    const Eigen::Vector3d e1 = v2 - v0;
+    Eigen::Vector3d normal = e0.cross(e1);
+    const double normal_norm = normal.norm();
+    if (normal_norm < 1e-12) {
+      continue;
+    }
+    normal /= normal_norm;
+
+    const Eigen::Vector3d centroid = (v0 + v1 + v2) / 3.0;
+    const Eigen::Vector3d radial = centroid - mesh_center;
+    const double radial_norm = radial.norm();
+    if (radial_norm < 1e-12) {
+      continue;
+    }
+    const Eigen::Vector3d radial_unit = radial / radial_norm;
+    const double radial_dot = std::abs(normal.dot(radial_unit));
+    if (radial_dot > radial_dot_threshold) {
+      continue;
+    }
+
+    centroids.push_back(centroid);
+    centroid_triangle_indices.push_back(face_idx);
+  }
+
+  if (diagnostics) {
+    diagnostics->boundary_edge_count = centroids.size();
+  }
+
+  if (centroids.empty()) {
+    if (diagnostics) {
+      diagnostics->boundary_edges_empty = true;
+    }
+    RCLCPP_DEBUG(logger_, "Surface radial cluster mode: no candidate cylindrical wall faces found.");
+    return detections;
+  }
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr centroid_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+  centroid_cloud->points.reserve(centroids.size());
+  for (const auto & c : centroids) {
+    centroid_cloud->points.emplace_back(
+      static_cast<float>(c.x()),
+      static_cast<float>(c.y()),
+      static_cast<float>(c.z()));
+  }
+  centroid_cloud->width = centroid_cloud->points.size();
+  centroid_cloud->height = 1;
+
+  if (centroid_cloud->points.size() < static_cast<size_t>(min_cluster_size)) {
+    return detections;
+  }
+
+  pcl::search::KdTree<pcl::PointXYZ>::Ptr search_tree(new pcl::search::KdTree<pcl::PointXYZ>());
+  search_tree->setInputCloud(centroid_cloud);
+
+  pcl::EuclideanClusterExtraction<pcl::PointXYZ> extractor;
+  extractor.setInputCloud(centroid_cloud);
+  extractor.setSearchMethod(search_tree);
+  extractor.setClusterTolerance(cluster_tolerance);
+  extractor.setMinClusterSize(min_cluster_size);
+  extractor.setMaxClusterSize(static_cast<int>(centroid_cloud->points.size()));
+
+  std::vector<pcl::PointIndices> clusters;
+  extractor.extract(clusters);
+
+  if (diagnostics) {
+    diagnostics->loops_total = clusters.size();
+    diagnostics->loops_considered = clusters.size();
+  }
+
+  const double min_diameter = request.min_diameter > 0.0 ? request.min_diameter : 0.0;
+  const double max_diameter = request.max_diameter > 0.0 ?
+    request.max_diameter : std::numeric_limits<double>::max();
+  const double min_length = request.min_length > 0.0 ? request.min_length : 0.0;
+
+  for (size_t cluster_idx = 0; cluster_idx < clusters.size(); ++cluster_idx) {
+    const auto & indices = clusters[cluster_idx].indices;
+    if (indices.size() < static_cast<size_t>(min_cluster_size)) {
+      continue;
+    }
+
+    std::unordered_set<uint32_t> vertex_ids;
+    vertex_ids.reserve(indices.size() * 3);
+
+    for (const int centroid_idx : indices) {
+      if (centroid_idx < 0 || static_cast<size_t>(centroid_idx) >= centroid_triangle_indices.size()) {
+        continue;
+      }
+      const size_t tri_idx = centroid_triangle_indices[static_cast<size_t>(centroid_idx)];
+      const auto & poly = mesh.polygons[tri_idx];
+      for (const uint32_t vid : poly.vertices) {
+        if (vid < vertices.size()) {
+          vertex_ids.insert(vid);
+        }
+      }
+    }
+
+    std::vector<Eigen::Vector3d> cluster_vertices;
+    cluster_vertices.reserve(vertex_ids.size());
+    for (const uint32_t vid : vertex_ids) {
+      cluster_vertices.push_back(vertices[vid]);
+    }
+
+    if (cluster_vertices.size() < 6) {
+      continue;
+    }
+
+    const CylinderFitSimple fit = fit_cylinder_from_points(cluster_vertices);
+    if (!fit.valid) {
+      continue;
+    }
+
+    const double diameter = 2.0 * fit.radius;
+    if (diameter + diameter_tolerance < min_diameter) {
+      continue;
+    }
+    if (diameter - diameter_tolerance > max_diameter) {
+      continue;
+    }
+    if (min_length > 0.0 && fit.length + length_tolerance < min_length) {
+      continue;
+    }
+
+    msg::Hole hole;
+    hole.kind = msg::Hole::SURFACE_CIRCLE;
+    hole.diameter = static_cast<float>(diameter);
+    hole.length = static_cast<float>(fit.length);
+    const double top_dist = (fit.top - mesh_center).squaredNorm();
+    const double bottom_dist = (fit.bottom - mesh_center).squaredNorm();
+    const Eigen::Vector3d entry = (top_dist >= bottom_dist) ? fit.top : fit.bottom;
+
+    Eigen::Vector3d radial_out = entry - mesh_center;
+    radial_out = normalize_or_default(radial_out, fit.axis);
+
+    const double slab = params_.pose.neighbor_slab_thickness > 0.0 ?
+      params_.pose.neighbor_slab_thickness : params_.cylinder_fit.distance_threshold * 2.0;
+    std::vector<Eigen::Vector3d> entry_ring;
+    entry_ring.reserve(cluster_vertices.size());
+    for (const auto & p : cluster_vertices) {
+      const double dist = (p - entry).dot(fit.axis);
+      if (std::abs(dist) <= slab) {
+        entry_ring.push_back(p);
+      }
+    }
+
+    Eigen::Vector3d entry_center = entry;
+    Eigen::Vector3d z_dir = fit.axis;
+
+    const double z_dot = z_dir.dot(radial_out);
+    if (std::abs(z_dot) < 0.3) {
+      z_dir = radial_out;
+    } else if (z_dot < 0.0) {
+      z_dir = -z_dir;
+    }
+
+    if (entry_ring.size() >= static_cast<size_t>(params_.surface_circle.min_loop_vertices)) {
+      const Frame plane_frame = make_frame(fit.axis, Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY());
+      std::vector<Eigen::Vector2d> ring_2d;
+      ring_2d.reserve(entry_ring.size());
+      for (const auto & p : entry_ring) {
+        const Eigen::Vector3d diff = p - entry;
+        ring_2d.emplace_back(plane_frame.x.dot(diff), plane_frame.y.dot(diff));
+      }
+
+      const double inlier_tol = std::max(
+        params_.surface_circle.circularity_rmse_thresh * 2.0,
+        params_.cylinder_fit.distance_threshold * 2.0);
+      const size_t min_inliers = std::max(
+        static_cast<size_t>(params_.surface_circle.min_loop_vertices), static_cast<size_t>(6));
+      const size_t iterations = 150;
+      const CircleFitResult circle = fit_circle_ransac(
+        ring_2d, iterations, inlier_tol, min_inliers, static_cast<uint32_t>(params_.sampling.seed));
+      if (circle.success && circle.rmse <= params_.surface_circle.circularity_rmse_thresh) {
+        entry_center = entry +
+          plane_frame.x * circle.center.x() +
+          plane_frame.y * circle.center.y();
+      }
+    }
+
+    const Frame frame = make_frame(z_dir, Eigen::Vector3d::UnitX(), Eigen::Vector3d::UnitY());
+
+    hole.pose.position.x = entry_center.x();
+    hole.pose.position.y = entry_center.y();
+    hole.pose.position.z = entry_center.z();
+    hole.pose.orientation = quaternion_from_frame(frame);
+    hole.axis.x = frame.z.x();
+    hole.axis.y = frame.z.y();
+    hole.axis.z = frame.z.z();
+
+    detections.push_back(std::move(hole));
+
+    if (diagnostics) {
+      ++diagnostics->detections_emitted;
+      ++diagnostics->circle_fit_success;
+    }
   }
 
   return detections;
