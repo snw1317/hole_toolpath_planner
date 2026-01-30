@@ -2,12 +2,10 @@
 
 #include <memory>
 #include <vector>
-
 #include <QMainWindow>
 #include <vtkSmartPointer.h>
 
 #include "hole_toolpath_planner/msg/hole_array.hpp"
-#include "hole_toolpath_planner/msg/toolpath.hpp"
 #include "hole_toolpath_planner/parameters.hpp"
 #include "hole_toolpath_planner/srv/detect_holes.hpp"
 
@@ -17,14 +15,13 @@ class QDoubleSpinBox;
 class QDockWidget;
 class QLabel;
 class QPushButton;
+class QTableWidget;
 class QVTKOpenGLNativeWidget;
 class vtkActor;
-class vtkAxes;
 class vtkAxesActor;
 class vtkPolyDataMapper;
 class vtkPropAssembly;
 class vtkRenderer;
-class vtkTubeFilter;
 
 namespace hole_toolpath_planner
 {
@@ -68,7 +65,8 @@ private:
 
   // VTK helpers
   void rebuildHoleActors();
-  void rebuildToolpathActors();
+  void refreshHoleTable();
+  void updateHoleVisibility(int row);
 
   // Data + planner state
   std::string mesh_file_;
@@ -78,21 +76,18 @@ private:
   std::unique_ptr<HoleDetector> detector_;
   srv::DetectHoles::Request detect_request_;
   msg::HoleArray holes_;
-  std::vector<msg::Toolpath> toolpaths_;
 
   // UI widgets
   QAction* action_run_{};
   QAction* action_load_mesh_{};
   QAction* action_load_params_{};
   QAction* action_save_holes_{};
-  QAction* action_save_toolpaths_{};
 
   QCheckBox* show_mesh_{};
   QCheckBox* show_holes_{};
-  QCheckBox* show_toolpaths_{};
-  QCheckBox* show_toolpath_lines_{};
   QCheckBox* show_axes_{};
-  QCheckBox* generate_toolpaths_{};
+  QCheckBox* show_table_{};
+  QCheckBox* imperial_units_{};
 
   QDoubleSpinBox* min_diameter_{};
   QDoubleSpinBox* max_diameter_{};
@@ -101,10 +96,14 @@ private:
 
   QDoubleSpinBox* axis_size_{};
   QDoubleSpinBox* origin_size_{};
+  QCheckBox* show_all_holes_{};
+  QTableWidget* hole_table_{};
 
-  QDoubleSpinBox* approach_offset_{};
-  QDoubleSpinBox* stepdown_{};
-  QDoubleSpinBox* spiral_pitch_{};
+  QLabel* min_diameter_label_{};
+  QLabel* max_diameter_label_{};
+  QLabel* min_length_label_{};
+  QLabel* axis_size_label_{};
+  QLabel* origin_size_label_{};
 
   // Rendering
   QVTKOpenGLNativeWidget* render_widget_{};
@@ -113,12 +112,9 @@ private:
   vtkSmartPointer<vtkActor> mesh_actor_;
 
   vtkSmartPointer<vtkPropAssembly> hole_actor_;
-  vtkSmartPointer<vtkPropAssembly> toolpath_actor_;
-  vtkSmartPointer<vtkPropAssembly> toolpath_lines_actor_;
+  std::vector<vtkSmartPointer<vtkAxesActor>> hole_axes_;
 
-  vtkSmartPointer<vtkAxes> axes_;
   vtkSmartPointer<vtkAxesActor> axes_actor_;
-  vtkSmartPointer<vtkTubeFilter> tube_filter_;
 };
 
 }  // namespace hole_toolpath_planner

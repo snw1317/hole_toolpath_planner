@@ -76,6 +76,15 @@ The diameter fields are expressed in meters (e.g. `0.010` = 10 mm).
 
 If the service returns an empty array, check the node's terminal for diagnostics describing why candidate holes were rejected.
 
+## Run the GUI
+Launch the hole toolpath planner GUI with a mesh and parameter file:
+
+```bash
+cd ~/holes_pose_tpp_ws
+source install/setup.bash
+ros2 run hole_toolpath_planner hole_toolpath_planner_gui_app --   --mesh /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/test_parts/hole_test_plate_m.stl   --params /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/cfg/default_params.yaml
+```
+
 ## Next steps
 - Adjust `cfg/default_params.yaml` (C++) or `hole_toolpath_planner_py/cfg/default_params.yaml` (Python) to tune sampling density and detection thresholds.
 - Visualize results by enabling RViz markers in the launch file.

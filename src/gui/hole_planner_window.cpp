@@ -3,39 +3,31 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
-#include <QCommandLineParser>
+#include <QDoubleSpinBox>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
-#include <QSpinBox>
+#include <QTableWidget>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <QHeaderView>
 #include <QVTKOpenGLNativeWidget.h>
 
 #include <vtkAbstractPolyDataReader.h>
-#include <vtkAxes.h>
 #include <vtkAxesActor.h>
-#include <vtkLeaderActor2D.h>
-#include <vtkLineSource.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkOpenGLActor.h>
 #include <vtkOpenGLPolyDataMapper.h>
 #include <vtkOpenGLRenderer.h>
 #include <vtkPLYReader.h>
-#include <vtkPolyDataMapper.h>
 #include <vtkPropAssembly.h>
 #include <vtkRenderWindow.h>
 #include <vtkProperty.h>
-#include <vtkSphereSource.h>
 #include <vtkSTLReader.h>
-#include <vtkTextActor.h>
-#include <vtkTextProperty.h>
 #include <vtkTransform.h>
-#include <vtkTransformFilter.h>
-#include <vtkTubeFilter.h>
 
 #include <pcl/io/vtk_lib_io.h>
 
@@ -73,122 +65,16 @@ vtkSmartPointer<vtkTransform> toVTK(const Eigen::Isometry3d& mat)
   return t;
 }
 
-vtkSmartPointer<vtkActor> makeSphere(const Eigen::Vector3d& center, double radius, const std::array<double, 3>& color)
+vtkSmartPointer<vtkAxesActor> createHoleAxisActor(const geometry_msgs::msg::Pose& pose, double axis_size)
 {
-  vtkNew<vtkSphereSource> source;
-  source->SetCenter(center.x(), center.y(), center.z());
-  source->SetRadius(radius);
-
-  vtkNew<vtkPolyDataMapper> mapper;
-  mapper->SetInputConnection(source->GetOutputPort());
-
-  vtkNew<vtkActor> actor;
-  actor->SetMapper(mapper);
-  actor->GetProperty()->SetColor(color[0], color[1], color[2]);
-  actor->GetProperty()->SetOpacity(0.8);
-
+  auto actor = vtkSmartPointer<vtkAxesActor>::New();
+  actor->SetTotalLength(axis_size, axis_size, axis_size);
+  actor->SetAxisLabels(false);
+  actor->GetXAxisShaftProperty()->SetColor(1.0, 0.0, 0.0);
+  actor->GetYAxisShaftProperty()->SetColor(0.0, 1.0, 0.0);
+  actor->GetZAxisShaftProperty()->SetColor(0.0, 0.0, 1.0);
+  actor->SetUserTransform(toVTK(toEigen(pose)));
   return actor;
-}
-
-vtkSmartPointer<vtkPropAssembly> createPoseActors(const std::vector<geometry_msgs::msg::Pose>& poses,
-                                                  vtkAlgorithmOutput* waypoint_shape_output_port)
-{
-  auto assembly = vtkSmartPointer<vtkPropAssembly>::New();
-
-  for (const auto& pose : poses)
-  {
-    auto transform_filter = vtkSmartPointer<vtkTransformFilter>::New();
-    transform_filter->SetTransform(toVTK(toEigen(pose)));
-    transform_filter->SetInputConnection(waypoint_shape_output_port);
-
-    auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
-    mapper->SetInputConnection(transform_filter->GetOutputPort());
-
-    auto actor = vtkSmartPointer<vtkActor>::New();
-    actor->SetMapper(mapper);
-    assembly->AddPart(actor);
-  }
-
-  return assembly;
-}
-
-vtkSmartPointer<vtkPropAssembly> createPolylineActors(const std::vector<geometry_msgs::msg::Pose>& poses,
-                                                      double radius,
-                                                      const std::array<double, 3>& color)
-{
-  auto assembly = vtkSmartPointer<vtkPropAssembly>::New();
-  if (poses.size() < 2)
-    return assembly;
-
-  for (std::size_t i = 0; i + 1 < poses.size(); ++i)
-  {
-    vtkNew<vtkLineSource> line;
-    line->SetPoint1(poses[i].position.x, poses[i].position.y, poses[i].position.z);
-    line->SetPoint2(poses[i + 1].position.x, poses[i + 1].position.y, poses[i + 1].position.z);
-
-    vtkNew<vtkTubeFilter> tube;
-    tube->SetInputConnection(line->GetOutputPort());
-    tube->SetRadius(radius);
-    tube->SetNumberOfSides(8);
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputConnection(tube->GetOutputPort());
-
-    vtkNew<vtkActor> actor;
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(color[0], color[1], color[2]);
-    assembly->AddPart(actor);
-  }
-
-  return assembly;
-}
-
-vtkSmartPointer<vtkPropAssembly> createToolpathActors(const std::vector<msg::Toolpath>& toolpaths,
-                                                      vtkAlgorithmOutput* waypoint_shape_output_port)
-{
-  auto assembly = vtkSmartPointer<vtkPropAssembly>::New();
-  for (const auto& tp : toolpaths)
-  {
-    std::vector<geometry_msgs::msg::Pose> poses;
-    poses.reserve(tp.poses.size());
-    for (const auto& ps : tp.poses)
-      poses.push_back(ps.pose);
-    assembly->AddPart(createPoseActors(poses, waypoint_shape_output_port));
-  }
-  return assembly;
-}
-
-vtkSmartPointer<vtkPropAssembly> createToolpathLines(const std::vector<msg::Toolpath>& toolpaths,
-                                                     double radius,
-                                                     const std::array<double, 3>& color)
-{
-  auto assembly = vtkSmartPointer<vtkPropAssembly>::New();
-  for (const auto& tp : toolpaths)
-  {
-    std::vector<geometry_msgs::msg::Pose> poses;
-    poses.reserve(tp.poses.size());
-    for (const auto& ps : tp.poses)
-      poses.push_back(ps.pose);
-    assembly->AddPart(createPolylineActors(poses, radius, color));
-  }
-  return assembly;
-}
-
-vtkSmartPointer<vtkPropAssembly> createHoleActors(const msg::HoleArray& holes,
-                                                  vtkAlgorithmOutput* waypoint_shape_output_port,
-                                                  double sphere_radius)
-{
-  auto assembly = vtkSmartPointer<vtkPropAssembly>::New();
-  for (const auto& hole : holes.holes)
-  {
-    const Eigen::Vector3d center{ hole.pose.position.x, hole.pose.position.y, hole.pose.position.z };
-    assembly->AddPart(makeSphere(center, sphere_radius, { 0.1, 0.7, 0.3 }));
-
-    std::vector<geometry_msgs::msg::Pose> pose_list{ hole.pose };
-    auto pose_actor = createPoseActors(pose_list, waypoint_shape_output_port);
-    assembly->AddPart(pose_actor);
-  }
-  return assembly;
 }
 }  // namespace
 
@@ -198,11 +84,7 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   , mesh_mapper_(vtkSmartPointer<vtkOpenGLPolyDataMapper>::New())
   , mesh_actor_(vtkSmartPointer<vtkOpenGLActor>::New())
   , hole_actor_(vtkSmartPointer<vtkPropAssembly>::New())
-  , toolpath_actor_(vtkSmartPointer<vtkPropAssembly>::New())
-  , toolpath_lines_actor_(vtkSmartPointer<vtkPropAssembly>::New())
-  , axes_(vtkSmartPointer<vtkAxes>::New())
   , axes_actor_(vtkSmartPointer<vtkAxesActor>::New())
-  , tube_filter_(vtkSmartPointer<vtkTubeFilter>::New())
 {
   setWindowTitle("Hole Toolpath Planner");
 
@@ -216,8 +98,7 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   toolbar->addSeparator();
   action_run_ = toolbar->addAction("Run Planner", this, &HolePlannerWindow::plan);
   toolbar->addSeparator();
-  action_save_holes_ = toolbar->addAction("Save Holes", this, &HolePlannerWindow::onSaveHoles);
-  action_save_toolpaths_ = toolbar->addAction("Save Toolpaths", this, &HolePlannerWindow::onSaveToolpaths);
+  action_save_holes_ = toolbar->addAction("Save Hole Poses", this, &HolePlannerWindow::onSaveHoles);
 
   // Dock with controls
   auto* dock = new QDockWidget("Settings", this);
@@ -246,9 +127,12 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   watertight_hint_ = new QCheckBox(dock_widget);
   watertight_hint_->setChecked(false);
 
-  request_form->addRow(new QLabel("Min diameter (m)", dock_widget), min_diameter_);
-  request_form->addRow(new QLabel("Max diameter (m)", dock_widget), max_diameter_);
-  request_form->addRow(new QLabel("Min length (m)", dock_widget), min_length_);
+  min_diameter_label_ = new QLabel("Min diameter (m)", dock_widget);
+  max_diameter_label_ = new QLabel("Max diameter (m)", dock_widget);
+  min_length_label_ = new QLabel("Min length (m)", dock_widget);
+  request_form->addRow(min_diameter_label_, min_diameter_);
+  request_form->addRow(max_diameter_label_, max_diameter_);
+  request_form->addRow(min_length_label_, min_length_);
   request_form->addRow(new QLabel("Watertight hint", dock_widget), watertight_hint_);
 
   auto* view_form = new QFormLayout();
@@ -256,12 +140,12 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   show_mesh_->setChecked(true);
   show_holes_ = new QCheckBox("Show holes", dock_widget);
   show_holes_->setChecked(true);
-  show_toolpaths_ = new QCheckBox("Show poses", dock_widget);
-  show_toolpaths_->setChecked(true);
-  show_toolpath_lines_ = new QCheckBox("Show lines", dock_widget);
-  show_toolpath_lines_->setChecked(true);
   show_axes_ = new QCheckBox("Show world axes", dock_widget);
   show_axes_->setChecked(true);
+  show_table_ = new QCheckBox("Show table", dock_widget);
+  show_table_->setChecked(false);
+  imperial_units_ = new QCheckBox("Imperial units (in)", dock_widget);
+  imperial_units_->setChecked(false);
 
   axis_size_ = new QDoubleSpinBox(dock_widget);
   axis_size_->setDecimals(3);
@@ -277,47 +161,39 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
 
   view_form->addRow(show_mesh_);
   view_form->addRow(show_holes_);
-  view_form->addRow(show_toolpaths_);
-  view_form->addRow(show_toolpath_lines_);
   view_form->addRow(show_axes_);
-  view_form->addRow(new QLabel("Pose axis size (m)", dock_widget), axis_size_);
-  view_form->addRow(new QLabel("World axis size (m)", dock_widget), origin_size_);
-
-  auto* toolpath_form = new QFormLayout();
-  generate_toolpaths_ = new QCheckBox("Generate toolpaths", dock_widget);
-  generate_toolpaths_->setChecked(true);
-  approach_offset_ = new QDoubleSpinBox(dock_widget);
-  approach_offset_->setDecimals(3);
-  approach_offset_->setRange(0.0, 1.0);
-  approach_offset_->setSingleStep(0.001);
-  approach_offset_->setValue(0.01);
-
-  stepdown_ = new QDoubleSpinBox(dock_widget);
-  stepdown_->setDecimals(3);
-  stepdown_->setRange(0.0, 1.0);
-  stepdown_->setSingleStep(0.001);
-  stepdown_->setValue(0.002);
-
-  spiral_pitch_ = new QDoubleSpinBox(dock_widget);
-  spiral_pitch_->setDecimals(3);
-  spiral_pitch_->setRange(0.0, 1.0);
-  spiral_pitch_->setSingleStep(0.001);
-  spiral_pitch_->setValue(0.005);
-
-  toolpath_form->addRow(generate_toolpaths_);
-  toolpath_form->addRow(new QLabel("Approach offset (m)", dock_widget), approach_offset_);
-  toolpath_form->addRow(new QLabel("Stepdown (m)", dock_widget), stepdown_);
-  toolpath_form->addRow(new QLabel("Spiral pitch (m)", dock_widget), spiral_pitch_);
+  view_form->addRow(show_table_);
+  axis_size_label_ = new QLabel("Pose axis size (m)", dock_widget);
+  origin_size_label_ = new QLabel("World axis size (m)", dock_widget);
+  view_form->addRow(axis_size_label_, axis_size_);
+  view_form->addRow(origin_size_label_, origin_size_);
+  view_form->addRow(imperial_units_);
 
   layout->addWidget(new QLabel("Detection request", dock_widget));
   layout->addLayout(request_form);
   layout->addSpacing(8);
-  layout->addWidget(new QLabel("Toolpath", dock_widget));
-  layout->addLayout(toolpath_form);
-  layout->addSpacing(8);
   layout->addWidget(new QLabel("View", dock_widget));
   layout->addLayout(view_form);
   layout->addStretch(1);
+
+  show_all_holes_ = new QCheckBox("Show all holes", dock_widget);
+  show_all_holes_->setChecked(true);
+  hole_table_ = new QTableWidget(dock_widget);
+  hole_table_->setColumnCount(4);
+  hole_table_->setHorizontalHeaderLabels(QStringList() << "Show"
+                                                       << "Center (m)"
+                                                       << "Diameter (mm)"
+                                                       << "Length (mm)");
+  hole_table_->setSortingEnabled(false);
+  hole_table_->horizontalHeader()->setStretchLastSection(true);
+  hole_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
+  hole_table_->setEditTriggers(QAbstractItemView::AllEditTriggers);
+  hole_table_->setVisible(false);
+  show_all_holes_->setVisible(false);
+
+  layout->addSpacing(8);
+  layout->addWidget(show_all_holes_);
+  layout->addWidget(hole_table_);
 
   dock_widget->setLayout(layout);
   dock->setWidget(dock_widget);
@@ -329,16 +205,14 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   renderer_->AddActor(mesh_actor_);
 
   renderer_->AddActor(hole_actor_);
-  renderer_->AddActor(toolpath_actor_);
-  renderer_->AddActor(toolpath_lines_actor_);
-
-  axes_->SetScaleFactor(axis_size_->value());
-  tube_filter_->SetInputConnection(axes_->GetOutputPort());
-  tube_filter_->SetRadius(axes_->GetScaleFactor() / 10.0);
-  tube_filter_->SetNumberOfSides(10);
-  tube_filter_->CappingOn();
-
-  axes_actor_->SetTotalLength(origin_size_->value(), origin_size_->value(), origin_size_->value());
+  const double origin_size_m = origin_size_->value();
+  axes_actor_->SetTotalLength(origin_size_m, origin_size_m, origin_size_m);
+  axes_actor_->SetXAxisLabelText("X");
+  axes_actor_->SetYAxisLabelText("Y");
+  axes_actor_->SetZAxisLabelText("Z");
+  axes_actor_->GetXAxisShaftProperty()->SetColor(1.0, 0.0, 0.0);
+  axes_actor_->GetYAxisShaftProperty()->SetColor(0.0, 1.0, 0.0);
+  axes_actor_->GetZAxisShaftProperty()->SetColor(0.0, 0.0, 1.0);
   renderer_->AddActor(axes_actor_);
 
   vtkRenderWindow* window = render_widget_->renderWindow();
@@ -355,36 +229,76 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
       hole_actor_->SetVisibility(checked);
     render();
   });
-  connect(show_toolpaths_, &QCheckBox::toggled, [this](bool checked) {
-    if (toolpath_actor_)
-      toolpath_actor_->SetVisibility(checked);
-    render();
-  });
-  connect(show_toolpath_lines_, &QCheckBox::toggled, [this](bool checked) {
-    if (toolpath_lines_actor_)
-      toolpath_lines_actor_->SetVisibility(checked);
-    render();
-  });
   connect(show_axes_, &QCheckBox::toggled, [this](bool checked) {
     axes_actor_->SetVisibility(checked);
     render();
   });
+  connect(show_table_, &QCheckBox::toggled, [this](bool checked) {
+    show_all_holes_->setVisible(checked);
+    hole_table_->setVisible(checked);
+    show_holes_->setChecked(checked);
+    hole_actor_->SetVisibility(checked);
+    render();
+  });
+  connect(hole_table_, &QTableWidget::itemChanged, [this](QTableWidgetItem* item) {
+    if (item->column() != 0)
+      return;
+    updateHoleVisibility(item->row());
+  });
+  connect(hole_table_, &QTableWidget::cellClicked, [this](int row, int column) {
+    if (column != 0)
+      return;
+    updateHoleVisibility(row);
+  });
+  connect(show_all_holes_, &QCheckBox::toggled, [this](bool checked) {
+    for (int row = 0; row < hole_table_->rowCount(); ++row)
+    {
+      if (auto* item = hole_table_->item(row, 0))
+        item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
+    }
+    for (std::size_t i = 0; i < hole_axes_.size(); ++i)
+      hole_axes_[i]->SetVisibility(checked);
+    hole_actor_->Modified();
+    render();
+  });
   connect(axis_size_, &QDoubleSpinBox::editingFinished, [this]() {
-    axes_->SetScaleFactor(axis_size_->value());
-    tube_filter_->SetRadius(axes_->GetScaleFactor() / 10.0);
     rebuildHoleActors();
-    rebuildToolpathActors();
     render();
   });
   connect(origin_size_, &QDoubleSpinBox::editingFinished, [this]() {
-    axes_actor_->SetTotalLength(origin_size_->value(), origin_size_->value(), origin_size_->value());
+    const double unit_scale = imperial_units_->isChecked() ? 0.0254 : 1.0;
+    const double origin_size_m = origin_size_->value() * unit_scale;
+    axes_actor_->SetTotalLength(origin_size_m, origin_size_m, origin_size_m);
+    render();
+  });
+  connect(imperial_units_, &QCheckBox::toggled, [this](bool checked) {
+    const double scale = checked ? 1.0 / 0.0254 : 0.0254;
+    min_diameter_->setValue(min_diameter_->value() * scale);
+    max_diameter_->setValue(max_diameter_->value() * scale);
+    min_length_->setValue(min_length_->value() * scale);
+    axis_size_->setValue(axis_size_->value() * scale);
+    origin_size_->setValue(origin_size_->value() * scale);
+
+    min_diameter_label_->setText(checked ? "Min diameter (in)" : "Min diameter (m)");
+    max_diameter_label_->setText(checked ? "Max diameter (in)" : "Max diameter (m)");
+    min_length_label_->setText(checked ? "Min length (in)" : "Min length (m)");
+    axis_size_label_->setText(checked ? "Pose axis size (in)" : "Pose axis size (m)");
+    origin_size_label_->setText(checked ? "World axis size (in)" : "World axis size (m)");
+    hole_table_->setHorizontalHeaderLabels(QStringList() << "Show"
+                                                         << QString("Center (%1)").arg(checked ? "in" : "m")
+                                                         << QString("Diameter (%1)").arg(checked ? "in" : "mm")
+                                                         << QString("Length (%1)").arg(checked ? "in" : "mm"));
+
+    refreshHoleTable();
+    rebuildHoleActors();
+    const double unit_scale = checked ? 0.0254 : 1.0;
+    const double origin_size_m = origin_size_->value() * unit_scale;
+    axes_actor_->SetTotalLength(origin_size_m, origin_size_m, origin_size_m);
     render();
   });
 
   mesh_actor_->SetVisibility(show_mesh_->isChecked());
   hole_actor_->SetVisibility(show_holes_->isChecked());
-  toolpath_actor_->SetVisibility(show_toolpaths_->isChecked());
-  toolpath_lines_actor_->SetVisibility(show_toolpath_lines_->isChecked());
   axes_actor_->SetVisibility(show_axes_->isChecked());
 
   rebuildDetector();
@@ -414,11 +328,7 @@ void HolePlannerWindow::rebuildDetector()
 
 void HolePlannerWindow::refreshParametersUi()
 {
-  const bool default_generate = params_file_.isEmpty() ? true : params_.toolpath.generate;
-  generate_toolpaths_->setChecked(default_generate);
-  approach_offset_->setValue(params_.toolpath.approach_offset);
-  stepdown_->setValue(params_.toolpath.stepdown);
-  spiral_pitch_->setValue(params_.toolpath.spiral_pitch);
+  (void)params_;
 }
 
 void HolePlannerWindow::setMeshFile(const QString& file)
@@ -461,27 +371,22 @@ void HolePlannerWindow::plan()
   }
 
   detect_request_.mesh_path = mesh_file_;
-  detect_request_.min_diameter = static_cast<float>(min_diameter_->value());
-  detect_request_.max_diameter = static_cast<float>(max_diameter_->value());
-  detect_request_.min_length = static_cast<float>(min_length_->value());
+  const double unit_scale = imperial_units_->isChecked() ? 0.0254 : 1.0;
+  detect_request_.min_diameter = static_cast<float>(min_diameter_->value() * unit_scale);
+  detect_request_.max_diameter = static_cast<float>(max_diameter_->value() * unit_scale);
+  detect_request_.min_length = static_cast<float>(min_length_->value() * unit_scale);
   detect_request_.watertight_hint = watertight_hint_->isChecked();
 
-  params_.toolpath.generate = generate_toolpaths_->isChecked();
-  params_.toolpath.approach_offset = approach_offset_->value();
-  params_.toolpath.stepdown = stepdown_->value();
-  params_.toolpath.spiral_pitch = spiral_pitch_->value();
   detector_ = std::make_unique<HoleDetector>(*node_, params_);
 
   try
   {
     QApplication::setOverrideCursor(Qt::WaitCursor);
     holes_ = detector_->detect(detect_request_);
-    const rclcpp::Time stamp(holes_.header.stamp);
-    toolpaths_ = detector_->make_toolpaths(holes_, stamp);
     QApplication::restoreOverrideCursor();
 
     rebuildHoleActors();
-    rebuildToolpathActors();
+    refreshHoleTable();
     render();
   }
   catch (const std::exception& ex)
@@ -494,24 +399,18 @@ void HolePlannerWindow::plan()
 void HolePlannerWindow::rebuildHoleActors()
 {
   renderer_->RemoveActor(hole_actor_);
-  hole_actor_ = createHoleActors(holes_, tube_filter_->GetOutputPort(), axis_size_->value() * 0.5);
+  hole_actor_ = vtkSmartPointer<vtkPropAssembly>::New();
+  hole_axes_.clear();
+  const double axis_size_m = axis_size_->value() * (imperial_units_->isChecked() ? 0.0254 : 1.0);
+  hole_axes_.reserve(holes_.holes.size());
+  for (const auto& hole : holes_.holes)
+  {
+    auto actor = createHoleAxisActor(hole.pose, axis_size_m);
+    hole_actor_->AddPart(actor);
+    hole_axes_.push_back(actor);
+  }
   renderer_->AddActor(hole_actor_);
   hole_actor_->SetVisibility(show_holes_->isChecked());
-}
-
-void HolePlannerWindow::rebuildToolpathActors()
-{
-  renderer_->RemoveActor(toolpath_actor_);
-  renderer_->RemoveActor(toolpath_lines_actor_);
-
-  toolpath_actor_ = createToolpathActors(toolpaths_, tube_filter_->GetOutputPort());
-  toolpath_lines_actor_ = createToolpathLines(toolpaths_, axis_size_->value() * 0.2, { 0.2, 0.4, 0.9 });
-
-  renderer_->AddActor(toolpath_actor_);
-  renderer_->AddActor(toolpath_lines_actor_);
-
-  toolpath_actor_->SetVisibility(show_toolpaths_->isChecked());
-  toolpath_lines_actor_->SetVisibility(show_toolpath_lines_->isChecked());
 }
 
 void HolePlannerWindow::onLoadMesh()
@@ -533,73 +432,126 @@ void HolePlannerWindow::onSaveHoles()
 {
   if (holes_.holes.empty())
   {
-    QMessageBox::information(this, "Save holes", "No detections to save yet.");
+    QMessageBox::information(this, "Save hole poses", "No detections to save yet.");
+    return;
+  }
+
+  std::vector<std::size_t> selected;
+  selected.reserve(holes_.holes.size());
+  if (hole_table_->rowCount() == static_cast<int>(holes_.holes.size()))
+  {
+    for (int row = 0; row < hole_table_->rowCount(); ++row)
+    {
+      const auto* item = hole_table_->item(row, 0);
+      if (item && item->checkState() == Qt::Checked)
+        selected.push_back(static_cast<std::size_t>(row));
+    }
+  }
+  else
+  {
+    for (std::size_t i = 0; i < holes_.holes.size(); ++i)
+      selected.push_back(i);
+  }
+
+  if (selected.empty())
+  {
+    QMessageBox::information(this, "Save hole poses", "No holes selected in the table.");
     return;
   }
 
   const QString file =
-      QFileDialog::getSaveFileName(this, "Save holes YAML", "", "YAML files (*.yaml *.yml);;All files (*.*)");
+      QFileDialog::getSaveFileName(this, "Save hole poses YAML", "", "YAML files (*.yaml *.yml);;All files (*.*)");
   if (file.isEmpty())
     return;
 
   std::ofstream out(file.toStdString());
   if (!out)
   {
-    QMessageBox::warning(this, "Save holes", "Failed to open file for writing.");
+    QMessageBox::warning(this, "Save hole poses", "Failed to open file for writing.");
     return;
   }
 
-  out << "holes:\n";
-  for (const auto& hole : holes_.holes)
+  const int64_t stamp_sec = 0;
+  const int64_t stamp_nsec = 0;
+  const std::string frame_id =
+      params_.logging.frame_id.empty() ? std::string("world") : params_.logging.frame_id;
+
+  for (std::size_t index : selected)
   {
-    out << "  - id: " << hole.id << "\n";
-    out << "    diameter: " << hole.diameter << "\n";
-    out << "    length: " << hole.length << "\n";
-    out << "    pose:\n";
-    out << "      position: [" << hole.pose.position.x << ", " << hole.pose.position.y << ", "
-        << hole.pose.position.z << "]\n";
-    out << "      orientation: [" << hole.pose.orientation.w << ", " << hole.pose.orientation.x << ", "
-        << hole.pose.orientation.y << ", " << hole.pose.orientation.z << "]\n";
-    out << "    axis: [" << hole.axis.x << ", " << hole.axis.y << ", " << hole.axis.z << "]\n";
+    const auto& hole = holes_.holes[index];
+    out << "---\n";
+    out << "header:\n";
+    out << "  stamp:\n";
+    out << "    sec: " << stamp_sec << "\n";
+    out << "    nanosec: " << stamp_nsec << "\n";
+    out << "  frame_id: " << frame_id << "\n";
+    out << "pose:\n";
+    out << "  position:\n";
+    out << "    x: " << hole.pose.position.x << "\n";
+    out << "    y: " << hole.pose.position.y << "\n";
+    out << "    z: " << hole.pose.position.z << "\n";
+    out << "  orientation:\n";
+    out << "    x: " << hole.pose.orientation.x << "\n";
+    out << "    y: " << hole.pose.orientation.y << "\n";
+    out << "    z: " << hole.pose.orientation.z << "\n";
+    out << "    w: " << hole.pose.orientation.w << "\n";
   }
 }
 
-void HolePlannerWindow::onSaveToolpaths()
+void HolePlannerWindow::refreshHoleTable()
 {
-  if (toolpaths_.empty())
+  hole_table_->blockSignals(true);
+  hole_table_->setRowCount(static_cast<int>(holes_.holes.size()));
+  for (int row = 0; row < static_cast<int>(holes_.holes.size()); ++row)
   {
-    QMessageBox::information(this, "Save toolpaths", "No toolpaths to save yet.");
-    return;
+    const auto& hole = holes_.holes[static_cast<std::size_t>(row)];
+
+    auto* show_item = new QTableWidgetItem();
+    show_item->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+    show_item->setCheckState(Qt::Checked);
+    hole_table_->setItem(row, 0, show_item);
+
+    const bool imperial = imperial_units_->isChecked();
+    const double unit_scale = imperial ? (1.0 / 0.0254) : 1.0;
+    const double center_x = hole.pose.position.x * unit_scale;
+    const double center_y = hole.pose.position.y * unit_scale;
+    const double center_z = hole.pose.position.z * unit_scale;
+
+    const double diameter_mm = hole.diameter * 1000.0;
+    const double length_mm = hole.length * 1000.0;
+    const double diameter_unit = imperial ? (hole.diameter * unit_scale) : diameter_mm;
+    const double length_unit = imperial ? (hole.length * unit_scale) : length_mm;
+
+    hole_table_->setItem(
+        row,
+        1,
+        new QTableWidgetItem(
+            QString("[%1] (%2, %3, %4)")
+                .arg(hole.id, 2, 10, QChar('0'))
+                .arg(center_x, 0, 'f', 4)
+                .arg(center_y, 0, 'f', 4)
+                .arg(center_z, 0, 'f', 4)));
+    hole_table_->setItem(row, 2, new QTableWidgetItem(QString::number(diameter_unit, 'f', imperial ? 4 : 3)));
+    hole_table_->setItem(row, 3, new QTableWidgetItem(QString::number(length_unit, 'f', imperial ? 4 : 3)));
   }
 
-  const QString file =
-      QFileDialog::getSaveFileName(this, "Save toolpaths YAML", "", "YAML files (*.yaml *.yml);;All files (*.*)");
-  if (file.isEmpty())
-    return;
+  show_all_holes_->blockSignals(true);
+  show_all_holes_->setChecked(true);
+  show_all_holes_->blockSignals(false);
+  hole_table_->blockSignals(false);
+}
 
-  std::ofstream out(file.toStdString());
-  if (!out)
-  {
-    QMessageBox::warning(this, "Save toolpaths", "Failed to open file for writing.");
+void HolePlannerWindow::updateHoleVisibility(int row)
+{
+  if (row < 0 || static_cast<std::size_t>(row) >= hole_axes_.size())
     return;
-  }
-
-  out << "toolpaths:\n";
-  for (const auto& tp : toolpaths_)
-  {
-    out << "  - hole_id: " << tp.hole_id << "\n";
-    out << "    strategy: \"" << tp.strategy << "\"\n";
-    out << "    stepdown: " << tp.stepdown << "\n";
-    out << "    feedrate: " << tp.feedrate << "\n";
-    out << "    poses:\n";
-    for (const auto& ps : tp.poses)
-    {
-      out << "      - position: [" << ps.pose.position.x << ", " << ps.pose.position.y << ", " << ps.pose.position.z
-          << "]\n";
-      out << "        orientation: [" << ps.pose.orientation.w << ", " << ps.pose.orientation.x << ", "
-          << ps.pose.orientation.y << ", " << ps.pose.orientation.z << "]\n";
-    }
-  }
+  const auto* item = hole_table_->item(row, 0);
+  if (!item)
+    return;
+  const bool visible = item->checkState() == Qt::Checked;
+  hole_axes_[static_cast<std::size_t>(row)]->SetVisibility(visible);
+  hole_actor_->Modified();
+  render();
 }
 
 }  // namespace hole_toolpath_planner
