@@ -35,6 +35,11 @@ struct SurfaceCircleParameters
 {
   int min_loop_vertices;
   double circularity_rmse_thresh;
+  bool refine_enabled;
+  int refine_ransac_iterations;
+  double refine_min_coverage;
+  double refine_shift_max_ratio;
+  double refine_slab_radius_ratio;
   std::string plane_fit_method;
   std::string outer_boundary_policy;
   std::array<double, 3> into_hint;

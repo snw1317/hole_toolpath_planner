@@ -16,6 +16,14 @@ namespace hole_toolpath_planner
 class HoleDetector
 {
 public:
+  struct HoleQuality
+  {
+    bool low_confidence{false};
+    float coverage{1.0F};
+    float rmse{0.0F};
+    float center_shift{0.0F};
+  };
+
   HoleDetector(rclcpp::Node & node, PlannerParameters params);
 
   msg::HoleArray detect(const srv::DetectHoles::Request & request);
@@ -23,6 +31,7 @@ public:
   std::vector<msg::Toolpath> make_toolpaths(const msg::HoleArray & holes, const rclcpp::Time & stamp);
 
   const PlannerParameters & parameters() const {return params_;}
+  const std::vector<HoleQuality> & last_detection_quality() const {return last_detection_quality_;}
 
 private:
   struct SurfaceDiagnostics
@@ -43,6 +52,9 @@ private:
     size_t circle_fit_success{0};
     size_t rmse_rejections{0};
     size_t radius_rejections{0};
+    size_t low_confidence_count{0};
+    size_t low_coverage_count{0};
+    size_t large_shift_count{0};
     size_t detections_emitted{0};
   };
 
@@ -78,24 +90,30 @@ private:
   std::vector<msg::Hole> detect_surface_mode_legacy(
     const pcl::PolygonMesh & mesh,
     const srv::DetectHoles::Request & request,
-    SurfaceDiagnostics * diagnostics = nullptr) const;
+    SurfaceDiagnostics * diagnostics = nullptr,
+    std::vector<HoleQuality> * qualities = nullptr) const;
 
   std::vector<msg::Hole> detect_surface_clusters(
     const pcl::PolygonMesh & mesh,
     const srv::DetectHoles::Request & request,
-    SurfaceDiagnostics * diagnostics = nullptr) const;
+    SurfaceDiagnostics * diagnostics = nullptr,
+    std::vector<HoleQuality> * qualities = nullptr) const;
 
   std::vector<msg::Hole> detect_surface_clusters_radial(
     const pcl::PolygonMesh & mesh,
     const srv::DetectHoles::Request & request,
-    SurfaceDiagnostics * diagnostics = nullptr) const;
+    SurfaceDiagnostics * diagnostics = nullptr,
+    std::vector<HoleQuality> * qualities = nullptr) const;
 
   std::vector<msg::Hole> detect_solid_mode(
     const pcl::PolygonMesh & mesh,
     const srv::DetectHoles::Request & request,
-    SolidDiagnostics * diagnostics = nullptr) const;
+    SolidDiagnostics * diagnostics = nullptr,
+    std::vector<HoleQuality> * qualities = nullptr) const;
 
-  std::vector<msg::Hole> deduplicate(std::vector<msg::Hole> && holes) const;
+  std::vector<msg::Hole> deduplicate(
+    std::vector<msg::Hole> && holes,
+    std::vector<size_t> * kept_source_indices = nullptr) const;
 
   msg::HoleArray assemble_response(
     std::vector<msg::Hole> && holes,
@@ -104,6 +122,7 @@ private:
   rclcpp::Node & node_;
   PlannerParameters params_;
   rclcpp::Logger logger_;
+  std::vector<HoleQuality> last_detection_quality_;
 };
 
 }  // namespace hole_toolpath_planner

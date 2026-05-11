@@ -6,7 +6,7 @@ hole_toolpath_planner:
     detection:
       mode: "auto"                # auto | surface | solid
       surface_strategy: "auto"    # auto | clusters | legacy | radial
-      cluster_tolerance: 0.010
+      cluster_tolerance: 0.006
       radial_dot_threshold: 0.6
       dedupe_angle_deg: 5.0
       dedupe_center_tol: 0.0005
@@ -24,6 +24,11 @@ hole_toolpath_planner:
     surface_circle:
       min_loop_vertices: 6
       circularity_rmse_thresh: 0.002
+      refine_enabled: true
+      refine_ransac_iterations: 80
+      refine_min_coverage: 0.70
+      refine_shift_max_ratio: 0.35
+      refine_slab_radius_ratio: 0.25
       plane_fit_method: "pca"
       outer_boundary_policy: "largest_by_area"
       into_hint: [0.0, 0.0, 1.0]

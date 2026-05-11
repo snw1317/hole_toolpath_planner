@@ -2,7 +2,9 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QBrush>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDockWidget>
@@ -20,6 +22,7 @@
 #include <vtkAbstractPolyDataReader.h>
 #include <vtkAxesActor.h>
 #include <vtkInteractorStyleTrackballCamera.h>
+#include <vtkMatrix4x4.h>
 #include <vtkOpenGLActor.h>
 #include <vtkOpenGLPolyDataMapper.h>
 #include <vtkOpenGLRenderer.h>
@@ -59,10 +62,18 @@ Eigen::Isometry3d toEigen(const geometry_msgs::msg::Pose& pose)
 
 vtkSmartPointer<vtkTransform> toVTK(const Eigen::Isometry3d& mat)
 {
+  auto matrix = vtkSmartPointer<vtkMatrix4x4>::New();
+  const Eigen::Matrix4d eigen_matrix = mat.matrix();
+  for (int row = 0; row < 4; ++row)
+  {
+    for (int col = 0; col < 4; ++col)
+    {
+      matrix->SetElement(row, col, eigen_matrix(row, col));
+    }
+  }
+
   auto t = vtkSmartPointer<vtkTransform>::New();
-  t->Translate(mat.translation().data());
-  Eigen::AngleAxisd aa(mat.rotation());
-  t->RotateWXYZ(aa.angle() * 180.0 / M_PI, aa.axis().data());
+  t->SetMatrix(matrix);
   return t;
 }
 
@@ -223,11 +234,12 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
   show_all_holes_ = new QCheckBox("Show all holes", dock_widget);
   show_all_holes_->setChecked(true);
   hole_table_ = new QTableWidget(dock_widget);
-  hole_table_->setColumnCount(4);
+  hole_table_->setColumnCount(5);
   hole_table_->setHorizontalHeaderLabels(QStringList() << "Show"
                                                        << "Center (m)"
                                                        << "Diameter (mm)"
-                                                       << "Length (mm)");
+                                                       << "Length (mm)"
+                                                       << "Quality");
   hole_table_->setSortingEnabled(false);
   hole_table_->horizontalHeader()->setStretchLastSection(true);
   hole_table_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -333,7 +345,8 @@ HolePlannerWindow::HolePlannerWindow(QWidget* parent)
     hole_table_->setHorizontalHeaderLabels(QStringList() << "Show"
                                                          << QString("Center (%1)").arg(checked ? "in" : "m")
                                                          << QString("Diameter (%1)").arg(checked ? "in" : "mm")
-                                                         << QString("Length (%1)").arg(checked ? "in" : "mm"));
+                                                         << QString("Length (%1)").arg(checked ? "in" : "mm")
+                                                         << "Quality");
 
     refreshHoleTable();
     rebuildHoleActors();
@@ -481,6 +494,12 @@ void HolePlannerWindow::plan()
   {
     QApplication::setOverrideCursor(Qt::WaitCursor);
     holes_ = detector_->detect(detect_request_);
+    hole_quality_.clear();
+    const auto & quality = detector_->last_detection_quality();
+    hole_quality_.reserve(quality.size());
+    for (const auto & q : quality) {
+      hole_quality_.push_back(HoleQualityInfo{q.low_confidence, q.coverage, q.rmse, q.center_shift});
+    }
     QApplication::restoreOverrideCursor();
 
     rebuildHoleActors();
@@ -631,6 +650,21 @@ void HolePlannerWindow::refreshHoleTable()
                 .arg(center_z, 0, 'f', 4)));
     hole_table_->setItem(row, 2, new QTableWidgetItem(QString::number(diameter_unit, 'f', imperial ? 4 : 3)));
     hole_table_->setItem(row, 3, new QTableWidgetItem(QString::number(length_unit, 'f', imperial ? 4 : 3)));
+    HoleQualityInfo quality{};
+    if (static_cast<std::size_t>(row) < hole_quality_.size()) {
+      quality = hole_quality_[static_cast<std::size_t>(row)];
+    }
+    auto* quality_item = new QTableWidgetItem(quality.low_confidence ? "WARN(edge)" : "OK");
+    quality_item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    quality_item->setToolTip(
+      QString("coverage=%1\nrmse=%2 m\ncenter_shift=%3 m")
+      .arg(quality.coverage, 0, 'f', 3)
+      .arg(quality.rmse, 0, 'f', 6)
+      .arg(quality.center_shift, 0, 'f', 6));
+    if (quality.low_confidence) {
+      quality_item->setBackground(QBrush(QColor(255, 235, 170)));
+    }
+    hole_table_->setItem(row, 4, quality_item);
   }
 
   show_all_holes_->blockSignals(true);

@@ -77,6 +77,14 @@ private:
   std::unique_ptr<HoleDetector> detector_;
   srv::DetectHoles::Request detect_request_;
   msg::HoleArray holes_;
+  struct HoleQualityInfo
+  {
+    bool low_confidence{false};
+    float coverage{1.0F};
+    float rmse{0.0F};
+    float center_shift{0.0F};
+  };
+  std::vector<HoleQualityInfo> hole_quality_;
 
   // UI widgets
   QAction* action_run_{};

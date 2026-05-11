@@ -43,6 +43,16 @@ PlannerParameters declare_and_get_parameters(rclcpp::Node & node)
   params.surface_circle.min_loop_vertices = node.declare_parameter<int>("surface_circle.min_loop_vertices", 6);
   params.surface_circle.circularity_rmse_thresh = node.declare_parameter<double>(
     "surface_circle.circularity_rmse_thresh", 0.002);
+  params.surface_circle.refine_enabled = node.declare_parameter<bool>(
+    "surface_circle.refine_enabled", true);
+  params.surface_circle.refine_ransac_iterations = node.declare_parameter<int>(
+    "surface_circle.refine_ransac_iterations", 80);
+  params.surface_circle.refine_min_coverage = node.declare_parameter<double>(
+    "surface_circle.refine_min_coverage", 0.70);
+  params.surface_circle.refine_shift_max_ratio = node.declare_parameter<double>(
+    "surface_circle.refine_shift_max_ratio", 0.35);
+  params.surface_circle.refine_slab_radius_ratio = node.declare_parameter<double>(
+    "surface_circle.refine_slab_radius_ratio", 0.25);
   params.surface_circle.plane_fit_method = node.declare_parameter<std::string>(
     "surface_circle.plane_fit_method", "pca");
   params.surface_circle.outer_boundary_policy = node.declare_parameter<std::string>(

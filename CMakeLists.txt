@@ -45,6 +45,9 @@ ament_export_dependencies(rosidl_default_runtime)
 
 add_library(${PROJECT_NAME}_core
   src/hole_detector.cpp
+  src/hole_detector_surface.cpp
+  src/hole_detector_solid.cpp
+  src/hole_detection_common.cpp
   src/parameters.cpp
   src/toolpath_generator.cpp
 )
