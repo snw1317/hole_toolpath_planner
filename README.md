@@ -27,7 +27,7 @@ Create or reuse a ROS 2 workspace (example: `~/holes_pose_tpp_ws`) and clone the
 mkdir -p ~/holes_pose_tpp_ws/src
 cd ~/holes_pose_tpp_ws/src
 
-git clone https://github.com/<your-org>/hole_toolpath_planner.git
+git clone https://github.com/snw1317/hole_toolpath_planner.git
 
 cd ..
 rosdep install --from-paths src --ignore-src -r -y
@@ -71,7 +71,7 @@ cd ~/holes_pose_tpp_ws
 source install/setup.bash
 
 ros2 service call /detect_holes hole_toolpath_planner/srv/DetectHoles \
-  "{mesh_path: '/home/snw13/hole_toolpath_planner_ws/src/hole_toolpath_planner/test_parts/hole_test_plate_m.stl', \
+  "{mesh_path: '${HOME}/holes_pose_tpp_ws/src/hole_toolpath_planner/test_parts/hole_test_plate_m.stl', \
      min_diameter: 0.006, \
      max_diameter: 0.012, \
      min_length: 0.002, \
@@ -101,8 +101,8 @@ Launch the hole toolpath planner GUI with a mesh and parameter file:
 cd ~/holes_pose_tpp_ws
 source install/setup.bash
 ros2 run hole_toolpath_planner hole_toolpath_planner_gui_app -- \
-  --mesh /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/test_parts/hole_test_plate_m.stl \
-  --params /home/snw13/holes_pose_tpp_ws/src/hole_toolpath_planner/cfg/default_params.yaml
+  --mesh ${HOME}/holes_pose_tpp_ws/src/hole_toolpath_planner/test_parts/hole_test_plate_m.stl \
+  --params ${HOME}/holes_pose_tpp_ws/src/hole_toolpath_planner/cfg/default_params.yaml
 ```
 
 ### Detection algorithm options
